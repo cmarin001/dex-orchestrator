@@ -4,3 +4,5 @@ package-lock.json
 .env.*
 !.env.example
 data/
+dashboard/dist/
+public/dashboard/

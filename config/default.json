@@ -1,0 +1,10 @@
+{
+  "discovery_scope": {
+    "sources": [
+      { "chain": "solana", "dex": "orca", "pages": 1 },
+      { "chain": "base", "dex": "uniswap-v3-base", "pages": 1 }
+    ],
+    "triggers": ["new_pair", "vol_spike", "liq_spike"],
+    "max_candidates": 12
+  }
+}

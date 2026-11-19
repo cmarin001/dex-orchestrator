@@ -1,9 +1,12 @@
 import { equityCurve } from "../agents/equity-curve.js";
 import { executor } from "../agents/executor.js";
 import { logger } from "../agents/logger.js";
-import { rugCheck } from "../agents/rug-check.js";
+import { defaultRisk } from "../../schemas/risk-config.js";
+import type { RiskConfig } from "../../schemas/risk-config.js";
+import type { ExitPolicy } from "../../schemas/exit-policy.js";
+import { requireRugCheckPass, rugCheck } from "../agents/rug-check.js";
 import { scanner } from "../agents/scanner.js";
-import { sizer } from "../agents/sizer.js";
+import { riskBudget, sizer } from "../agents/sizer.js";
 import type { CallAgent } from "../agents/call.js";
 import type { Merged } from "../cache/merge.js";
 import type { Audit } from "../logging/logger.js";
@@ -21,6 +24,9 @@ export interface Pipeline {
   maxOpenPositions: number;
   signal?: AbortSignal;
   now?: () => number;
+  equityMaxAgeMs?: number;
+  riskConfig?: () => Promise<RiskConfig>;
+  exitMode?: "profit_only" | "stop_loss";
 }
 
 export async function runCandidate(input: Merged, dependencies: Pipeline): Promise<"paper_fill" | "skipped"> {
@@ -36,8 +42,10 @@ export async function runCandidate(input: Merged, dependencies: Pipeline): Promi
   if (!market || !security || !fresh()) return skip("mandatory_recon_missing_or_stale");
   const open = positions.get(identity);
   if (open) {
-    equity.mark(open, market.price_usd);
-    await record("equity-mark", { current_equity: equity.current_equity, price_usd: market.price_usd });
+    if (!open.exit_policy) {
+      equity.mark(open, market.price_usd, market.provenance?.price_usd.observed_at ?? now());
+      await record("equity-mark", { current_equity: equity.current_equity, price_usd: market.price_usd });
+    }
     return skip("position_already_open");
   }
   const scan = await scanner(call, identity, input);
@@ -48,26 +56,40 @@ export async function runCandidate(input: Merged, dependencies: Pipeline): Promi
   await record("rug-check", risk);
   if (security.assessment !== "clear" || risk.assessment !== "clear") return skip("risk_not_clear");
 
+  const pass = requireRugCheckPass(security.assessment, risk);
+  const config = await dependencies.riskConfig?.() ?? defaultRisk;
+  if (dependencies.equityMaxAgeMs && !equity.hasFreshMarks(positions.list(), now(), dependencies.equityMaxAgeMs)) {
+    return skip("equity_marks_stale");
+  }
   const currentEquity = equity.current_equity;
-  const availableCents = equity.initialCents - positions.committedCents;
+  const availableCents = equity.availableCapital - positions.committedCents;
   if (availableCents <= 0 || positions.count >= maxOpenPositions) {
     return skip("position_limit");
   }
+  const budget = riskBudget(config, equity.drawdown_pct, currentEquity, market.liquidity_usd);
   const proposal = await sizer(call, identity, {
-    market, risk, available_cents: availableCents, current_equity: currentEquity, max_position_bps: maxPositionBps,
+    market, risk: pass, available_cents: Math.min(availableCents, budget), current_equity: currentEquity, max_position_bps: maxPositionBps,
   });
-  const costCents = sizePosition(proposal.requested_cents, currentEquity, availableCents, maxPositionBps);
+  const costCents = sizePosition(proposal.requested_cents, currentEquity, Math.min(availableCents, budget), maxPositionBps);
   await record("sizer", { proposal, approved_cents: costCents });
   if (costCents === 0) return skip("zero_size");
 
-  const recommendation = await executor(call, identity, { mode: "paper", cost_cents: costCents, market, risk });
+  const exitBase = { entry_price: market.price_usd, entry_at: now(), min_profit_bps_for_exit: 25,
+    timeout_ladder: config.timeout_ladder, max_hold_sec: 3600 };
+  const exit_policy: ExitPolicy = dependencies.exitMode === "stop_loss"
+    ? { ...exitBase, mode: "stop_loss", stop_loss_bps: 100 }
+    : { ...exitBase, mode: "profit_only" };
+  const recommendation = await executor(call, identity, { mode: "paper", cost_cents: costCents, market, risk, exit_policy,
+    max_slippage_bps: config.max_slippage_bps });
   await record("executor", recommendation);
   if (recommendation.decision !== "approve") return skip("executor_rejected");
   if (!fresh() || signal?.aborted) return skip("expired_before_fill");
 
-  const position = { ...identity, cost_cents: costCents, entry_price_usd: market.price_usd };
+  const position = { ...identity, cost_cents: costCents, entry_price_usd: market.price_usd,
+    ...(dependencies.exitMode ? { exit_policy: { ...exit_policy, entry_at: now() } } : {}) };
   await audit({ identity, stage: "executor", status: "paper_fill", gaps: [], position });
   positions.record(position);
+  equity.mark(position, market.price_usd, market.provenance?.price_usd.observed_at ?? now());
 
   let observerError: unknown;
   const socialGaps = !input.social || input.social.sentiment === "unavailable" ? ["social_unavailable"] : [];

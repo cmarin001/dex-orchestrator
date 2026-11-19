@@ -24,19 +24,27 @@ export function fileAudit(path: string): Audit {
   };
 }
 
-export async function replayPositions(path: string): Promise<Position[]> {
+export async function readJournal(path: string, allowPendingAppend = false) {
   let content: string;
-  try {
-    content = await readFile(path, "utf8");
-  } catch (error) {
+  try { content = await readFile(path, "utf8"); }
+  catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
-  if (content && !content.endsWith("\n")) throw new SystemError("Incomplete audit record");
-  return content.split("\n").filter(Boolean).flatMap((line) => {
-    const event = auditSchema.parse(JSON.parse(line) as unknown);
-    if (event.status !== "paper_fill") return [];
-    if (!event.position) throw new SystemError("Missing paper fill position");
-    return [event.position];
-  });
+  if (content && !content.endsWith("\n")) {
+    if (!allowPendingAppend) throw new SystemError("Incomplete audit record");
+    content = content.slice(0, content.lastIndexOf("\n") + 1);
+  }
+  return content.split("\n").filter(Boolean).map(line => auditSchema.parse(JSON.parse(line) as unknown));
+}
+
+export async function replayPositions(path: string): Promise<Position[]> {
+  const open = new Map<string, Position>();
+  for (const event of await readJournal(path)) {
+    if (event.status !== "paper_fill" && event.status !== "paper_close") continue;
+    if (!event.position) throw new SystemError("Missing paper position");
+    if (event.status === "paper_fill") open.set(event.position.run_id, event.position);
+    else open.delete(event.position.run_id);
+  }
+  return [...open.values()];
 }

@@ -3,14 +3,19 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=20.19.0" },
+  "engines": {
+    "node": ">=20.19.0"
+  },
   "scripts": {
     "build": "tsc --noEmit",
     "test": "tsx --test tests/unit/*.test.ts tests/integration/*.test.ts",
-    "start": "node --env-file-if-exists=.env --import tsx src/index.ts"
+    "start": "node --env-file-if-exists=.env --import tsx src/index.ts",
+    "dashboard:api": "node --env-file-if-exists=.env --import tsx src/dashboard-api/server.ts"
   },
   "dependencies": {
+    "@hono/node-server": "2.1.9",
     "@solana/web3.js": "1.98.4",
+    "hono": "4.13.19",
     "viem": "2.38.5",
     "zod": "4.1.12"
   },

@@ -1,11 +1,18 @@
+import { chartPointSchema } from "../schemas/live-view.js";
+import { defaultRisk } from "../schemas/risk-config.js";
 import { normalizeAddress, targetSchema } from "../schemas/common.js";
+import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { responsesAgent } from "./agents/call.js";
 import { targetKey } from "./cache/merge.js";
-import { fileAudit, replayPositions } from "./logging/logger.js";
+import { fileAudit, readJournal } from "./logging/logger.js";
 import { runLoop } from "./orchestrator/loop.js";
 import { Equity } from "./state/equity.js";
 import { Positions } from "./state/positions.js";
+import { watchPositions } from "./exits/watcher.js";
+
+import { readRisk, requireFreshRisk } from "./state/risk-config.js";
+import { scopeSchema } from "./tools/discovery.js";
 
 const integer = z.coerce.number().int().positive();
 const config = z.object({
@@ -22,29 +29,64 @@ const config = z.object({
   MAX_OPEN_POSITIONS: integer.default(5),
   SOCIAL_ENABLED: z.enum(["true", "false"]).default("false"),
   AUDIT_PATH: z.string().min(1).default("data/audit.jsonl"),
+  ENABLE_DISCOVERY: z.enum(["true", "false"]).default("false"),
+  MARK_REFRESH_MS: integer.max(2_147_483_647).default(5000),
+  PAPER_EXIT_MODE: z.enum(["profit_only", "stop_loss"]).default("profit_only"),
+  RISK_CONFIG_PATH: z.string().default("data/risk-config.jsonl"),
+  REQUIRE_RISK_CONFIG: z.enum(["true", "false"]).default("false"),
+  MAX_EQUITY_AGE_SEC: integer.default(120),
+  MAX_RISK_CONFIG_AGE_SEC: integer.default(3600),
   GOPLUS_ACCESS_TOKEN: z.string().optional(),
 });
 
 async function main(): Promise<void> {
   const env = config.parse(process.env);
-  const targets = z.array(targetSchema).nonempty().parse(JSON.parse(env.WATCHLIST) as unknown)
+  const discovery = env.ENABLE_DISCOVERY === "true" ? scopeSchema.parse(
+    JSON.parse(await readFile(new URL("../config/default.json", import.meta.url), "utf8")).discovery_scope,
+  ) : undefined;
+  const targets = z.array(targetSchema).parse(JSON.parse(env.WATCHLIST) as unknown)
     .map(({ chain, token, pair }) => ({ chain, token: normalizeAddress(chain, token), pair: normalizeAddress(chain, pair) }));
+  if (!targets.length && !discovery) throw new Error("Configure a watchlist or enable discovery");
   const uniqueTargets = [...new Map(targets.map((target) => [targetKey(target), target])).values()];
   const equity = new Equity(env.INITIAL_EQUITY_CENTS);
   const positions = new Positions();
-  for (const position of await replayPositions(env.AUDIT_PATH)) positions.record(position);
+  const audit = fileAudit(env.AUDIT_PATH);
+  for (const event of await readJournal(env.AUDIT_PATH)) {
+    const { position, close, identity } = event;
+    if (event.status === "paper_fill" && position) {
+      positions.record(position);
+      equity.mark(position, position.entry_price_usd, Date.parse(event.at));
+    } else if (event.status === "paper_close" && position && close) {
+      positions.close(position);
+      equity.close(position, close.proceeds_cents);
+    } else if (event.stage === "position_mark" && identity) {
+      const open = positions.get(identity);
+      const point = chartPointSchema.safeParse(event.detail);
+      if (open && open.run_id === identity.run_id && point.success) equity.mark(open, point.data.price, point.data.t);
+    }
+  }
   const abort = new AbortController();
   process.once("SIGINT", () => abort.abort());
   process.once("SIGTERM", () => abort.abort());
-  await runLoop({
-    targets: uniqueTargets, intervalMs: env.LOOP_INTERVAL_MS,
+  const watcher = watchPositions(positions, equity, audit, abort.signal, env.MARK_REFRESH_MS).finally(() => abort.abort());
+  const loop = runLoop({
+    targets: uniqueTargets, discovery, intervalMs: env.LOOP_INTERVAL_MS,
     ttl: { marketMs: env.MARKET_TTL_MS, securityMs: env.SECURITY_TTL_MS },
     breakerFailures: env.BREAKER_FAILURES, breakerCooldownMs: env.BREAKER_COOLDOWN_MS,
     socialEnabled: env.SOCIAL_ENABLED === "true", goPlusAccessToken: env.GOPLUS_ACCESS_TOKEN,
   }, {
-    call: responsesAgent(env.OPENAI_API_KEY, env.OPENAI_MODEL, abort.signal), audit: fileAudit(env.AUDIT_PATH),
+    call: responsesAgent(env.OPENAI_API_KEY, env.OPENAI_MODEL, abort.signal), audit,
+    exitMode: env.PAPER_EXIT_MODE,
+    equityMaxAgeMs: env.MAX_EQUITY_AGE_SEC * 1000,
+    riskConfig: async () => {
+      const revision = await readRisk(env.RISK_CONFIG_PATH);
+      return revision || env.REQUIRE_RISK_CONFIG === "true"
+        ? requireFreshRisk(revision, Date.now(), env.MAX_RISK_CONFIG_AGE_SEC * 1000) : defaultRisk;
+    },
     equity, positions, maxPositionBps: env.MAX_POSITION_BPS, maxOpenPositions: env.MAX_OPEN_POSITIONS,
-  }, abort.signal);
+  }, abort.signal).finally(() => abort.abort());
+  const results = await Promise.allSettled([loop, watcher]);
+  for (const result of results) if (result.status === "rejected") throw result.reason;
 }
 
 await main().catch((error: unknown) => {

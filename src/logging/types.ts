@@ -1,3 +1,4 @@
+import { paperCloseSchema } from "../../schemas/trade-history.js";
 import { z } from "zod";
 import { positionSchema } from "../state/positions.js";
 import { handoff } from "../../schemas/common.js";
@@ -6,10 +7,12 @@ export const auditSchema = z.object({
   at: z.iso.datetime(),
   stage: z.string(),
   identity: z.strictObject(handoff).optional(),
-  status: z.enum(["ok", "skipped", "failed", "paper_fill"]),
+  status: z.enum(["ok", "skipped", "failed", "paper_fill", "paper_close"]),
   gaps: z.array(z.string()),
   detail: z.unknown().optional(),
   position: positionSchema.optional(),
+  close: paperCloseSchema.optional(),
 });
 
-export type AuditEvent = Omit<z.infer<typeof auditSchema>, "at">;
+export type JournalEvent = z.infer<typeof auditSchema>;
+export type AuditEvent = Omit<JournalEvent, "at">;

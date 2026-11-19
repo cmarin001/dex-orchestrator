@@ -34,3 +34,9 @@ Set these project environment variables to enable paper runs:
 `OPENAI_MODEL` and `GOPLUS_ACCESS_TOKEN` are optional. Keep keys in Vercel
 environment variables. No wallet keys are required. The deployment includes no
 scheduled runs.
+
+## TradeKeel paper dashboard
+
+See the [dashboard setup](dashboard/README.md) and
+[ADR 0004](docs/adr/0004-dashboard-and-tradeKeel-reuse.md) for risk settings,
+discovery, automated paper exits, live charts, and audit-derived trade history.
