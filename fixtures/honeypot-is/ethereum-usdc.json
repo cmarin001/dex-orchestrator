@@ -1,0 +1,63 @@
+{
+  "token": {
+    "name": "USD Coin",
+    "symbol": "USDC",
+    "decimals": 6,
+    "address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    "totalHolders": 9210649
+  },
+  "withToken": {
+    "name": "Wrapped Ether",
+    "symbol": "WETH",
+    "decimals": 18,
+    "address": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+    "totalHolders": 3330720
+  },
+  "summary": {
+    "risk": "low",
+    "riskLevel": 1,
+    "flags": []
+  },
+  "simulationSuccess": true,
+  "honeypotResult": {
+    "isHoneypot": false
+  },
+  "simulationResult": {
+    "buyTax": 0,
+    "sellTax": 0,
+    "transferTax": 0,
+    "buyGas": "155922",
+    "sellGas": "106448"
+  },
+  "flags": [],
+  "contractCode": {
+    "openSource": true,
+    "rootOpenSource": true,
+    "isProxy": true,
+    "hasProxyCalls": true
+  },
+  "chain": {
+    "id": "1",
+    "name": "Ethereum",
+    "shortName": "eth",
+    "currency": "ETH"
+  },
+  "router": "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",
+  "pair": {
+    "pair": {
+      "name": "Uniswap V2: USDC-WETH",
+      "address": "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc",
+      "token0": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      "token1": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+      "type": "UniswapV2"
+    },
+    "chainId": "1",
+    "reserves0": "8554351939050",
+    "reserves1": "4822610985223190548960",
+    "liquidity": 17104558.01787068,
+    "router": "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D",
+    "createdAtTimestamp": "1588710145",
+    "creationTxHash": "0xd07cbde817318492092cc7a27b3064a69bd893c01cb593d6029683ffd290ab3a"
+  },
+  "pairAddress": "0xB4e16d0168e52d35CaCD2c6185b44281Ec28C9Dc"
+}
