@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { z } from "zod";
 import type { Handoff } from "../../schemas/common.js";
 import { CandidateError, SystemError } from "../orchestrator/errors.js";
@@ -36,9 +37,11 @@ const message = z.object({
   content: z.array(z.looseObject({ type: z.string() })),
 });
 
-export function responsesAgent(apiKey: string, model: string, signal?: AbortSignal): CallAgent {
+export function responsesAgent(apiKey: string, model: string, signal?: AbortSignal, promptDirectory?: string): CallAgent {
   return async ({ prompt, schema, identity, data, tools = [] }) => {
-    const instructions = await readFile(new URL(`../../prompts/${prompt}.md`, import.meta.url), "utf8")
+    const promptPath = promptDirectory ? join(promptDirectory, prompt + ".md")
+      : new URL(`../../prompts/${prompt}.md`, import.meta.url);
+    const instructions = await readFile(promptPath, "utf8")
       .catch((cause: unknown) => { throw new SystemError(`Unable to load ${prompt}`, { cause }); });
     const input: unknown[] = [{ role: "user", content: JSON.stringify({ identity, data }) }];
     const available = new Map(tools.map((tool) => [tool.name, tool]));

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "buildCommand": "npm run build",
+  "functions": {
+    "api/paper.ts": {
+      "maxDuration": 90,
+      "includeFiles": "prompts/**"
+    }
+  },
+  "rewrites": [{ "source": "/", "destination": "/api/paper" }]
+}

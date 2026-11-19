@@ -9,5 +9,10 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "schemas/**/*.ts", "tests/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "schemas/**/*.ts",
+    "tests/**/*.ts",
+    "api/**/*.ts"
+  ]
 }
