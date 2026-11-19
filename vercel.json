@@ -6,7 +6,15 @@
     "api/paper.ts": {
       "maxDuration": 90,
       "includeFiles": "prompts/**"
+    },
+    "api/dashboard-data.ts": {
+      "maxDuration": 60
     }
   },
-  "rewrites": [{ "source": "/", "destination": "/api/paper" }]
+  "rewrites": [
+    {
+      "source": "/",
+      "destination": "/api/paper"
+    }
+  ]
 }

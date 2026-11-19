@@ -8,6 +8,8 @@ import { merge, targetKey } from "../cache/merge.js";
 import type { Freshness, Market, Security } from "../cache/merge.js";
 import { TtlCache } from "../cache/ttl.js";
 import { CandidateError, SystemError } from "./errors.js";
+import { discover } from "../tools/discovery.js";
+import type { DiscoveryScope } from "../tools/discovery.js";
 import { runCandidate } from "./pipeline.js";
 import type { Pipeline } from "./pipeline.js";
 
@@ -18,6 +20,7 @@ export interface LoopOptions {
   breakerFailures: number;
   breakerCooldownMs: number;
   socialEnabled: boolean;
+  discovery?: DiscoveryScope;
   goPlusAccessToken?: string;
 }
 
@@ -25,16 +28,33 @@ export async function runLoop(options: LoopOptions, pipeline: Pipeline, signal: 
   const marketCache = new TtlCache<Market["value"]>(options.ttl.marketMs);
   const securityCache = new TtlCache<Security["value"]>(options.ttl.securityMs);
   let failures = 0;
+  let discoveryBaseline: Awaited<ReturnType<typeof discover>>["statistics"] | undefined;
   while (!signal.aborted) {
     const started = Date.now();
     let delay = options.intervalMs;
-    for (const target of options.targets) {
+    let targets = options.targets;
+    let scope = null;
+    if (options.discovery) {
+      try {
+        const found = await discover(options.discovery, undefined, discoveryBaseline);
+        discoveryBaseline = found.statistics;
+        targets = [...new Map([...options.targets, ...found.targets].map(target => [targetKey(target), target])).values()];
+        scope = { chains: [...new Set(found.scope.sources.map(({ chain }) => chain))], triggers: found.scope.triggers,
+          pools_scanned: Object.values(found.counts).reduce((total, count) => total + count, 0) };
+        await pipeline.audit({ stage: "market_discovery", status: "ok", gaps: [], detail: { ...scope, counts: found.counts } });
+      } catch (error) {
+        discoveryBaseline = undefined;
+        await pipeline.audit({ stage: "market_discovery", status: "failed", gaps: ["discovery_unavailable"],
+          detail: error instanceof Error ? error.message : "Unknown discovery error" });
+      }
+    }
+    for (const target of targets) {
       if (signal.aborted) break;
       const identity = { ...target, run_id: randomUUID() };
       const key = targetKey(target);
       try {
         const observations = await Promise.allSettled([
-          marketCache.get(key) ?? reconA(pipeline.call, identity),
+          marketCache.get(key) ?? reconA(pipeline.call, identity, undefined, scope),
           securityCache.get(key) ?? reconB(pipeline.call, identity, undefined, options.goPlusAccessToken),
           options.socialEnabled ? reconC(pipeline.call, identity) : undefined,
         ] as const);
