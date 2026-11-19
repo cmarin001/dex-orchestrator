@@ -13,6 +13,7 @@ import type { Audit } from "../logging/logger.js";
 import { sizePosition } from "../state/equity.js";
 import type { Equity } from "../state/equity.js";
 import type { Positions } from "../state/positions.js";
+import { failureKind, log } from "../logging/operational.js";
 import { CandidateError, SystemError } from "./errors.js";
 
 export interface Pipeline {
@@ -33,9 +34,14 @@ export async function runCandidate(input: Merged, dependencies: Pipeline): Promi
   const { identity, market, security, expires_at } = input;
   const { audit, call, equity, positions, maxPositionBps, maxOpenPositions, signal, now = Date.now } = dependencies;
   const fresh = () => expires_at !== null && now() < expires_at;
-  const record = (stage: string, detail: unknown) => audit({ identity, stage, status: "ok", gaps: [], detail });
+  const fields = { run_id: identity.run_id, chain: identity.chain };
+  const record = async (stage: string, detail: unknown) => {
+    await audit({ identity, stage, status: "ok", gaps: [], detail });
+    log("debug", "pipeline.stage", { ...fields, stage, outcome: "ok" });
+  };
   const skip = async (reason: string) => {
     await audit({ identity, stage: "pipeline", status: "skipped", gaps: [...input.gaps, reason] });
+    log("info", "pipeline.skipped", { ...fields, reason, gap_count: input.gaps.length + 1 });
     return "skipped" as const;
   };
 
@@ -89,6 +95,7 @@ export async function runCandidate(input: Merged, dependencies: Pipeline): Promi
     ...(dependencies.exitMode ? { exit_policy: { ...exit_policy, entry_at: now() } } : {}) };
   await audit({ identity, stage: "executor", status: "paper_fill", gaps: [], position });
   positions.record(position);
+  log("info", "position.opened", { ...fields, outcome: "paper_fill" });
   equity.mark(position, market.price_usd, market.provenance?.price_usd.observed_at ?? now());
 
   let observerError: unknown;
@@ -105,6 +112,7 @@ export async function runCandidate(input: Merged, dependencies: Pipeline): Promi
     try {
       result = await observe();
     } catch (error) {
+      log("warn", "pipeline.observer_failed", { ...fields, stage, failure_kind: failureKind(error) });
       if (!(error instanceof SystemError || error instanceof CandidateError)) throw error;
       await audit({ identity, stage, status: "failed", gaps: [stage + "_unavailable"] });
       if (error instanceof SystemError) observerError = error;
@@ -112,6 +120,7 @@ export async function runCandidate(input: Merged, dependencies: Pipeline): Promi
     }
     const gaps = "gaps" in result ? [...new Set([...socialGaps, ...result.gaps])] : [];
     await audit({ identity, stage, status: "ok", detail: result, gaps });
+    log("debug", "pipeline.stage", { ...fields, stage, outcome: "ok", gap_count: gaps.length });
   }
   if (observerError) throw observerError;
   return "paper_fill";

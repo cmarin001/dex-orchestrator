@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { z } from "zod";
 import type { Handoff } from "../../schemas/common.js";
+import { elapsed, log, observe, startTimer, withLogContext } from "../logging/operational.js";
 import { CandidateError, SystemError } from "../orchestrator/errors.js";
 
 export interface Tool {
@@ -38,7 +39,8 @@ const message = z.object({
 });
 
 export function responsesAgent(apiKey: string, model: string, signal?: AbortSignal, promptDirectory?: string): CallAgent {
-  return async ({ prompt, schema, identity, data, tools = [] }) => {
+  return ({ prompt, schema, identity, data, tools = [] }) => withLogContext(
+    { run_id: identity.run_id, chain: identity.chain }, () => observe("agent.run", { stage: prompt }, async () => {
     const promptPath = promptDirectory ? join(promptDirectory, prompt + ".md")
       : new URL(`../../prompts/${prompt}.md`, import.meta.url);
     const instructions = await readFile(promptPath, "utf8")
@@ -51,6 +53,8 @@ export function responsesAgent(apiKey: string, model: string, signal?: AbortSign
       const timeout = AbortSignal.timeout(25_000);
       const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
       let body: unknown;
+      const started = startTimer();
+      let status: number | undefined;
       try {
         const response = await fetch("https://api.openai.com/v1/responses", {
           method: "POST",
@@ -67,9 +71,12 @@ export function responsesAgent(apiKey: string, model: string, signal?: AbortSign
             text: { format: { type: "json_schema", name: prompt, strict: true, schema: z.toJSONSchema(schema) } },
           }),
         });
+        status = response.status;
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         body = await response.json();
+        log("debug", "agent.response", { stage: prompt, provider: "openai", attempt: round + 1, status, duration_ms: elapsed(started) });
       } catch (cause) {
+        log("warn", "agent.response", { stage: prompt, provider: "openai", attempt: round + 1, status, duration_ms: elapsed(started), outcome: "failed" });
         throw new SystemError(`Responses request failed for ${prompt}`, { cause });
       }
 
@@ -85,7 +92,7 @@ export function responsesAgent(apiKey: string, model: string, signal?: AbortSign
           if (!tool || used.has(name)) throw new CandidateError(`Unexpected tool call from ${prompt}`);
           parse(noArgs, parseJson(args, prompt), prompt);
           used.add(name);
-          const result = await tool.run();
+          const result = await observe("agent.tool", { stage: prompt, component: tool.name }, tool.run);
           input.push({ type: "function_call_output", call_id, output: JSON.stringify(result) });
         }
         continue;
@@ -105,7 +112,7 @@ export function responsesAgent(apiKey: string, model: string, signal?: AbortSign
       return output;
     }
     throw new CandidateError(`Tool budget exhausted for ${prompt}`);
-  };
+  }, "info"));
 }
 
 function parse<Schema extends z.ZodType>(schema: Schema, value: unknown, prompt: string): z.infer<Schema> {

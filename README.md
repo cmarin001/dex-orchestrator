@@ -41,3 +41,22 @@ See the [standalone dashboard](https://github.com/cmarin001/dex-orchestrator-app
 [dashboard API setup](docs/dashboard-api.md), and
 [ADR 0004](docs/adr/0004-dashboard-and-tradeKeel-reuse.md) for risk settings,
 discovery, automated paper exits, live charts, and audit-derived trade history.
+
+## Backend logging
+
+The worker, Hono server, and Vercel routes emit one JSON record per operational
+event. Set `LOG_LEVEL=debug` for provider requests, tool calls, cache hits, audit
+I/O, individual stages, and SSE lifecycle. The default `info` level includes
+startup and shutdown, agent timings, candidate outcomes, paper fills and exits,
+signing, risk edits, and HTTP request status. Failures are emitted at `warn`
+or `error`. Use `LOG_LEVEL=silent` to suppress operational logs.
+
+Filter by `request_id` for HTTP activity and by `run_id` for a candidate or
+position. Timings are in milliseconds and cover the instrumented operation.
+For SSE, the HTTP timing ends when the response is created. A separate stream
+record measures its lifetime.
+
+Operational records omit credentials, URLs and query values, prompts,
+model output, provider payloads, transaction bytes, and raw exception
+messages. The append-only audit journal remains the source for decision
+details and dashboard projections. Its format and persistence are unchanged.

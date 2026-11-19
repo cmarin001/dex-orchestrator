@@ -1,11 +1,13 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { join } from "node:path";
+import type { Handoff } from "../schemas/common.js";
 import { normalizeAddress, targetSchema } from "../schemas/common.js";
 import { responsesAgent } from "../src/agents/call.js";
 import { reconA } from "../src/agents/recon-a.js";
 import { reconB } from "../src/agents/recon-b.js";
 import { merge } from "../src/cache/merge.js";
 import type { AuditEvent } from "../src/logging/types.js";
+import { failureKind, log, logHttp, withLogContext } from "../src/logging/operational.js";
 import { CandidateError } from "../src/orchestrator/errors.js";
 import { runCandidate } from "../src/orchestrator/pipeline.js";
 import { Equity } from "../src/state/equity.js";
@@ -21,12 +23,16 @@ function authorized(request: Request, secret: string): boolean {
 }
 
 export async function GET() {
-  return json({ service: "dex-orchestrator", mode: "paper-preview", execution: "on-demand",
+  return logHttp("/api/paper", "GET", async () => json({ service: "dex-orchestrator", mode: "paper-preview", execution: "on-demand",
     configured: Boolean(process.env.OPENAI_API_KEY && process.env.PAPER_RUN_SECRET &&
-      process.env.PAPER_RUN_TARGET) });
+      process.env.PAPER_RUN_TARGET) }));
 }
 
 export async function POST(request: Request) {
+  return logHttp("/api/paper", "POST", () => runPaper(request));
+}
+
+async function runPaper(request: Request) {
   const secret = process.env.PAPER_RUN_SECRET;
   if (!secret || !authorized(request, secret)) {
     return json({ error: "unauthorized" }, 401, { "www-authenticate": "Bearer" });
@@ -44,6 +50,10 @@ export async function POST(request: Request) {
   const { chain } = target;
   const identity = { run_id: randomUUID(), chain, token: normalizeAddress(chain, target.token),
     pair: normalizeAddress(chain, target.pair) };
+  return withLogContext({ run_id: identity.run_id, chain }, () => executePaper(identity, request, apiKey));
+}
+
+async function executePaper(identity: Handoff, request: Request, apiKey: string) {
   const signal = AbortSignal.any([request.signal, AbortSignal.timeout(80_000)]);
   const call = responsesAgent(apiKey, process.env.OPENAI_MODEL || "gpt-4.1-mini", signal,
     join(process.cwd(), "prompts"));
@@ -58,8 +68,10 @@ export async function POST(request: Request) {
       call, signal, audit: async (event) => { events.push(event); },
       equity: new Equity(100_000), positions: new Positions(), maxPositionBps: 100, maxOpenPositions: 1,
     });
+    log("info", "paper.completed", { outcome });
     return json({ identity, outcome, events });
   } catch (error) {
+    log("warn", "paper.failed", { failure_kind: signal.aborted ? "aborted" : failureKind(error) });
     if (signal.aborted) return json({ identity, error: "invocation_timed_out", events }, 504);
     if (error instanceof CandidateError) return json({ identity, outcome: "skipped", events });
     return json({ identity, error: "provider_or_pipeline_unavailable", events }, 502);
