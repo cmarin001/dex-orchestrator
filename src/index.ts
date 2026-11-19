@@ -6,6 +6,7 @@ import { z } from "zod";
 import { responsesAgent } from "./agents/call.js";
 import { targetKey } from "./cache/merge.js";
 import { fileAudit, readJournal } from "./logging/logger.js";
+import { failureKind, log } from "./logging/operational.js";
 import { runLoop } from "./orchestrator/loop.js";
 import { Equity } from "./state/equity.js";
 import { Positions } from "./state/positions.js";
@@ -40,6 +41,7 @@ const config = z.object({
 });
 
 async function main(): Promise<void> {
+  log("info", "worker.starting");
   const env = config.parse(process.env);
   const discovery = env.ENABLE_DISCOVERY === "true" ? scopeSchema.parse(
     JSON.parse(await readFile(new URL("../config/default.json", import.meta.url), "utf8")).discovery_scope,
@@ -66,8 +68,10 @@ async function main(): Promise<void> {
     }
   }
   const abort = new AbortController();
-  process.once("SIGINT", () => abort.abort());
-  process.once("SIGTERM", () => abort.abort());
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => { log("info", "worker.shutdown_requested", { reason: signal }); abort.abort(); });
+  }
+  log("info", "worker.started", { count: uniqueTargets.length });
   const watcher = watchPositions(positions, equity, audit, abort.signal, env.MARK_REFRESH_MS).finally(() => abort.abort());
   const loop = runLoop({
     targets: uniqueTargets, discovery, intervalMs: env.LOOP_INTERVAL_MS,
@@ -87,9 +91,10 @@ async function main(): Promise<void> {
   }, abort.signal).finally(() => abort.abort());
   const results = await Promise.allSettled([loop, watcher]);
   for (const result of results) if (result.status === "rejected") throw result.reason;
+  log("info", "worker.stopped");
 }
 
 await main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : "Unknown startup or orchestration failure");
+  log("error", "worker.failed", { failure_kind: failureKind(error) });
   process.exitCode = 1;
 });

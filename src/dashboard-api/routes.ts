@@ -3,12 +3,15 @@ import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import { defaultRisk, riskConfigSchema } from "../../schemas/risk-config.js";
+import { elapsed, failureKind, log, logHttp, startTimer } from "../logging/operational.js";
 import { liveViews } from "../live/publisher.js";
 import { projectTradeHistory } from "../logging/projections/trade-history.js";
 import { readJournal } from "../logging/logger.js";
 import type { JournalEvent } from "../logging/types.js";
 import { appendRisk, readRisk } from "../state/risk-config.js";
 import { bearerAuth } from "./auth.js";
+
+export const dashboardRoutes = new Set(["/health", "/equity", "/journal", "/live-view", "/live-view/stream", "/trades", "/risk-config"]);
 
 const querySchema = z.object({
   from: z.iso.date().optional(), to: z.iso.date().optional(), run_id: z.string().optional(),
@@ -19,12 +22,14 @@ const querySchema = z.object({
 export function createDashboardApi(options: { token: string; auditPath: string; riskPath: string;
   initialCents: number; actor?: string; origin?: string; events?: () => Promise<JournalEvent[]>; readOnly?: boolean }) {
   const app = new Hono();
+  app.use("*", (c, next) => logHttp(dashboardRoutes.has(c.req.path) ? c.req.path : "unknown", c.req.method,
+    async () => { await next(); return c.res; }));
   if (options.origin) app.use("*", cors({ origin: options.origin, allowHeaders: ["Authorization", "Content-Type"],
     allowMethods: ["GET", "POST", "OPTIONS"] }));
   app.use("*", async (c, next) => { c.header("Cache-Control", "no-store"); await next(); });
   app.use("*", bearerAuth(options.token));
   const events = options.events ?? (() => readJournal(options.auditPath, true));
-  app.onError((error, c) => { console.error("Dashboard API:", error.name); return c.json({ error: "dashboard_data_unavailable" }, 503); });
+  app.onError((error, c) => { log("error", "dashboard.handler_failed", { failure_kind: failureKind(error) }); return c.json({ error: "dashboard_data_unavailable" }, 503); });
   app.get("/health", c => c.json({ status: "ok", mode: "paper" }));
   app.get("/journal", async c => {
     const query = querySchema.safeParse(c.req.query());
@@ -40,13 +45,22 @@ export function createDashboardApi(options: { token: string; auditPath: string; 
   });
   app.get("/live-view/stream", c => {
     const token = c.req.query("token");
+    const started = startTimer();
+    log("debug", "dashboard.stream_opened");
     return streamSSE(c, async stream => {
-      for (let frame = 0; frame < 10 && !stream.aborted; frame += 1) {
-        await stream.writeSSE({ event: "live-view",
-          data: JSON.stringify(liveViews(await events()).filter(view => !token || view.token === token)) });
-        await stream.sleep(5000);
+      let count = 0;
+      try {
+        while (count < 10 && !stream.aborted) {
+          await stream.writeSSE({ event: "live-view",
+            data: JSON.stringify(liveViews(await events()).filter(view => !token || view.token === token)) });
+          count += 1;
+          await stream.sleep(5000);
+        }
+      } finally {
+        log("debug", "dashboard.stream_closed", { count, duration_ms: elapsed(started) });
       }
-    }, async (_error, stream) => {
+    }, async (error, stream) => {
+      log("warn", "dashboard.stream_failed", { failure_kind: failureKind(error) });
       await stream.writeSSE({ event: "unavailable", data: "dashboard_data_unavailable" });
     });
   });
