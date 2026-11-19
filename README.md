@@ -37,6 +37,7 @@ scheduled runs.
 
 ## TradeKeel paper dashboard
 
-See the [dashboard setup](dashboard/README.md) and
+See the [standalone dashboard](https://github.com/cmarin001/dex-orchestrator-app),
+[dashboard API setup](docs/dashboard-api.md), and
 [ADR 0004](docs/adr/0004-dashboard-and-tradeKeel-reuse.md) for risk settings,
 discovery, automated paper exits, live charts, and audit-derived trade history.

@@ -1,7 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": null,
-  "buildCommand": "npm run build && npm --prefix dashboard run build && mkdir -p public/dashboard && cp -R dashboard/dist/. public/dashboard/",
+  "buildCommand": "npm run build",
   "functions": {
     "api/paper.ts": {
       "maxDuration": 90,
@@ -15,11 +15,6 @@
     {
       "source": "/",
       "destination": "/api/paper"
-    },
-    {
-      "source": "/dashboard",
-      "destination": "/dashboard/index.html"
     }
-  ],
-  "installCommand": "npm install && npm --prefix dashboard install"
+  ]
 }

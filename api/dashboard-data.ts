@@ -4,8 +4,31 @@ import { createDashboardApi } from "../src/dashboard-api/routes.js";
 
 const routes = new Set(["/health", "/equity", "/journal", "/live-view", "/live-view/stream", "/trades", "/risk-config"]);
 
-export async function GET(request: Request) { return handle(request); }
-export async function POST(request: Request) { return handle(request); }
+export async function GET(request: Request) { return withCors(request); }
+export async function POST(request: Request) { return withCors(request); }
+export async function OPTIONS(request: Request) { return withCors(request); }
+
+async function withCors(request: Request): Promise<Response> {
+  const origin = request.headers.get("Origin");
+  const allowedOrigin = process.env.DASHBOARD_ORIGIN;
+  const isAllowed = origin !== null && origin === allowedOrigin;
+  if (request.method === "OPTIONS") {
+    if (!isAllowed) return new Response(null, { status: 403, headers: { Vary: "Origin" } });
+    return new Response(null, { status: 204, headers: {
+      "Access-Control-Allow-Origin": origin,
+      "Access-Control-Allow-Headers": "Authorization, Content-Type",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Vary": "Origin",
+    } });
+  }
+  const response = await handle(request);
+  const headers = new Headers(response.headers);
+  headers.delete("Access-Control-Allow-Origin");
+  headers.delete("Access-Control-Allow-Credentials");
+  headers.append("Vary", "Origin");
+  if (isAllowed && origin) headers.set("Access-Control-Allow-Origin", origin);
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
 
 async function handle(request: Request) {
   const url = new URL(request.url);

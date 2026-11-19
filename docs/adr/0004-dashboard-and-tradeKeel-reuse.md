@@ -13,14 +13,16 @@ positive profit floor and the time ladder before recording a paper close.
 At max hold the last eligible target stays in effect. Existing positions with
 no assigned policy remain visible in equity and retain their legacy behavior.
 
-The frontend adapts TradeKeel’s paper desk header, brass and sage color tokens,
+The [standalone frontend repository](https://github.com/cmarin001/dex-orchestrator-app)
+adapts TradeKeel’s paper desk header, brass and sage color tokens,
 and static favicon and social card. The source repo couples its desk
 components to the old simulator, wallet handlers, and authentication, so the
 React views were rebuilt around read-only data. The dashboard has no dependency
 on the TradeKeel repository or Grok runtime. The orchestrator uses the
 OpenAI Responses API specified in ADR 0001.
 
-Hono provides a Web Request/Response interface usable on both the Node worker
+The frontend and worker deploy independently. The dashboard API v1 wire format
+is the boundary between them. Hono provides a Web Request/Response interface usable on both the Node worker
 host and a Vercel Function. The local worker owns a durable JSONL journal.
 The Vercel dashboard reads an HTTPS worker API or a read-only JSONL export.
 Persistent hosting and export credentials are provided by the operator.
