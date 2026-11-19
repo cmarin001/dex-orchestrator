@@ -1,5 +1,4 @@
 import type { z } from "zod";
-import { signTransaction } from "../exec/signer.js";
 import type { SigningRequest } from "../exec/signer.js";
 import { CandidateError } from "../orchestrator/errors.js";
 import { evmChainIds } from "../tools/goplus.js";
@@ -25,5 +24,6 @@ export async function signApprovedTransaction(
     ? chain === "solana"
     : chain !== "solana" && request.transaction.chainId === evmChainIds[chain];
   if (!matchesChain) throw new CandidateError("Signing request chain differs from approval");
+  const { signTransaction } = await import("../exec/signer.js");
   return signTransaction(request);
 }
