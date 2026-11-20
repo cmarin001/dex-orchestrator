@@ -11,15 +11,19 @@ export interface Tool {
   run: () => Promise<unknown>;
 }
 
-export interface AgentRequest<Schema extends z.ZodType<Handoff>> {
+export interface AgentRequest<Schema extends z.ZodType> {
   prompt: string;
   schema: Schema;
   identity: Handoff;
   data: unknown;
   tools?: Tool[];
+  promptFile?: string;
+  wire?: (value: unknown) => unknown;
+  wireSchema?: z.ZodType;
+  validate?: (output: z.infer<Schema>) => boolean;
 }
 
-export type CallAgent = <Schema extends z.ZodType<Handoff>>(
+export type CallAgent = <Schema extends z.ZodType>(
   request: AgentRequest<Schema>,
 ) => Promise<z.infer<Schema>>;
 
@@ -39,13 +43,13 @@ const message = z.object({
 });
 
 export function responsesAgent(apiKey: string, model: string, signal?: AbortSignal, promptDirectory?: string): CallAgent {
-  return ({ prompt, schema, identity, data, tools = [] }) => withLogContext(
+  return ({ prompt, schema, identity, data, tools = [], promptFile = prompt, wire, wireSchema, validate }) => withLogContext(
     { run_id: identity.run_id, chain: identity.chain }, () => observe("agent.run", { stage: prompt }, async () => {
-    const promptPath = promptDirectory ? join(promptDirectory, prompt + ".md")
-      : new URL(`../../prompts/${prompt}.md`, import.meta.url);
+    const promptPath = promptDirectory ? join(promptDirectory, promptFile + ".md")
+      : new URL(`../../prompts/${promptFile}.md`, import.meta.url);
     const instructions = await readFile(promptPath, "utf8")
       .catch((cause: unknown) => { throw new SystemError(`Unable to load ${prompt}`, { cause }); });
-    const input: unknown[] = [{ role: "user", content: JSON.stringify({ identity, data }) }];
+    const input: unknown[] = [{ role: "user", content: JSON.stringify(data) }];
     const available = new Map(tools.map((tool) => [tool.name, tool]));
     const used = new Set<string>();
 
@@ -68,7 +72,7 @@ export function responsesAgent(apiKey: string, model: string, signal?: AbortSign
               type: "function", name, description, strict: true,
               parameters: z.toJSONSchema(noArgs),
             })),
-            text: { format: { type: "json_schema", name: prompt, strict: true, schema: z.toJSONSchema(schema) } },
+            text: { format: { type: "json_schema", name: prompt, strict: true, schema: z.toJSONSchema(wireSchema ?? schema) } },
           }),
         });
         status = response.status;
@@ -104,10 +108,10 @@ export function responsesAgent(apiKey: string, model: string, signal?: AbortSign
       if (parts.length !== 1 || part?.type !== "output_text" || typeof part.text !== "string") {
         throw new CandidateError(`Missing structured output from ${prompt}`);
       }
-      const output = parse(schema, parseJson(part.text, prompt), prompt);
-      if (output.run_id !== identity.run_id || output.chain !== identity.chain ||
-          output.token !== identity.token || output.pair !== identity.pair) {
-        throw new CandidateError(`Identity mismatch in ${prompt}`);
+      const raw = parseJson(part.text, prompt);
+      const output = parse(schema, wire ? wire(raw) : raw, prompt);
+      if (validate ? !validate(output) : !matchesIdentity(output, identity)) {
+        throw new CandidateError(`Output does not match request in ${prompt}`);
       }
       return output;
     }
@@ -127,4 +131,10 @@ function parseJson(value: string, prompt: string): unknown {
   } catch {
     throw new CandidateError(`Invalid JSON from ${prompt}`);
   }
+}
+
+export function matchesIdentity(output: unknown, identity: Handoff): boolean {
+  return typeof output === "object" && output !== null && "run_id" in output &&
+    output.run_id === identity.run_id && "chain" in output && output.chain === identity.chain &&
+    "token" in output && output.token === identity.token && "pair" in output && output.pair === identity.pair;
 }

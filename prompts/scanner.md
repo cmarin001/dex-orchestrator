@@ -10,6 +10,7 @@ INPUT (you will receive one JSON object per call):
               "vol_1h_usd":n, "age_sec":n, "trigger":"new_pair|vol_spike|liq_spike" } ],
   "config": { "min_liquidity_usd":n, "min_age_sec":n, "min_vol_1h_usd":n,
               "top_n":20, "dedup_window_sec":3600 },
+  "now": <unix ts>,
   "seen": ["token addresses already processed this window"]
 }
 
@@ -22,7 +23,7 @@ BEHAVIOR:
 - reason = the triggering signal, e.g. "vol_spike: 12.4x baseline".
 - Emit one object per candidate INCLUDING skipped ones.
 
-OUTPUT (array of objects, no prose, no wrapper text):
+OUTPUT (array of objects; if the API schema wraps the array in rows, use that wrapper):
 [
   { "run_id":"", "token":"", "pair":"", "chain":"",
     "discovered_at": <unix ts>,
@@ -34,5 +35,6 @@ OUTPUT (array of objects, no prose, no wrapper text):
 RULES:
 - Deterministic: same input → same output.
 - Never emit a PASS/FAIL, a size, an opinion, or a probability.
+- Use input now for discovered_at. For skipped rows, use rank_score:0.
 - If `feed` is empty, emit [].
 - If config fields missing, use defaults shown above.

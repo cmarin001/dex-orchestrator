@@ -49,7 +49,7 @@ export async function watchPositions(positions: Positions, equity: Equity, audit
       await audit({ identity, stage: "executor", status: "paper_close", gaps: [], position,
         close: { exit_at: at, exit_price: price, exit_reason, proceeds_cents: proceeds } });
       positions.close(position);
-      equity.close(position, proceeds);
+      equity.close(position, proceeds, at);
       log("info", "position.closed", { ...fields, outcome: "paper_close", reason: exit_reason });
       targets.delete(run_id);
     }

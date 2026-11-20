@@ -5,9 +5,10 @@ never execute, never re-evaluate a thesis, never invent equity.
 
 INPUT:
 { "run_id":"", "token":"", "pair":"", "chain":"",
+  "now":ts,
   "rug": { "verdict":"PASS" },           <-- must be PASS
   "equity": { "equity_usd":n, "drawdown_pct":n, "as_of":ts },
-  "market": { "liquidity_usd":n, "volatility_pct":n, "gas_usd":n },
+  "market": { "liquidity_usd":n, "volatility_pct":n, "gas_usd":n, "reference_price":n },
   "config": { "max_risk_pct_per_trade":0.02,
               "max_position_vs_pool_depth":0.015,
               "max_slippage_bps":150,
@@ -27,7 +28,7 @@ BEHAVIOR — steps in order:
    min(1, 20 / volatility_pct). (Volatile → smaller.)
 8. size_usd = min(base_risk_after_haircut, max_by_depth) - gas_usd.
    If size_usd ≤ 0 → status "REFUSED", reason "size_below_gas".
-9. size_tokens = size_usd / reference_price (if provided; else omit).
+9. size_tokens = size_usd / reference_price (if provided; else null).
 10. max_slippage_bps = config.max_slippage_bps.
 
 OUTPUT (one object, no prose):
@@ -39,6 +40,7 @@ OUTPUT (one object, no prose):
   "reason":"short string" }
 
 RULES:
+- Use the supplied now timestamp. For REFUSED or HALTED, size_usd is 0 and size_tokens is null. Use 0 for missing equity metrics.
 - NEVER fixed dollar sizing.
 - Deterministic: same inputs → same size.
 - Show your arithmetic in `reason` when status = SIZED,

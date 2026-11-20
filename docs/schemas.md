@@ -1,17 +1,34 @@
-# Agent outputs
+# Agent contracts
 
-Every agent returns an object with `run_id`, `chain`, `token`, and `pair`. The caller checks those fields against the exact input identity. All fields listed below are required, and extra fields are rejected. `schemas/common.ts` supplies the identity and shared types. Each agent's Zod schema generates its strict JSON Schema and validates its result at runtime.
+The six specialized prompts in `prompts/` send their documented inputs
+directly to the Responses API. Their outputs are parsed with strict Zod
+schemas in `schemas/`.
 
-| Agent | Additional fields |
+| Agent | Response contract |
 | --- | --- |
-| Recon A | `summary` string |
-| Recon B | `assessment` clear, flagged, or unknown. `reasons` string array |
-| Recon C | `sentiment` positive, negative, neutral, or unavailable. `summary` string |
-| Scanner | `decision` advance or skip. `reason` string |
-| Rug Check | `assessment` clear, flagged, or unknown. `reasons` string array |
-| Sizer | `requested_cents` nonnegative safe integer. `reason` string |
-| Executor | `decision` approve or skip. `reason` string |
-| Logger | `summary` string. `gaps` string array |
-| Equity Curve | `commentary` string |
+| Scanner | Array of candidate rows with market fields, rank, reason, and skipped flag |
+| Rug Check | `PASS` or `FAIL`, named check results, and reason |
+| Sizer | `SIZED`, `REFUSED`, or `HALTED`, with size, equity, slippage, and reason |
+| Executor | Action and terminal status, with nullable fill fields |
+| Logger | Count and rows containing the original typed hop output and gaps |
+| Equity Curve | Equity, drawdown, win rate, expectancy, count, and timestamp |
 
-Recon tools take an empty object and close over the configured candidate. The deterministic merge supplies the downstream stages with price, conservative liquidity, assessment and reasons, optional social output, an expiry timestamp in epoch milliseconds, and a `gaps` array. Provider payloads are validated and projected before they reach the model. A paper fill audit entry carries the original identity, committed cents, and the observed entry price.
+The request to OpenAI wraps the Scanner array in a `rows` object. Its
+TypeScript wrapper returns the parsed array and checks that each row matches
+its supplied feed item. Logger checks row identity and verifies that the
+agent preserved each supplied output. Equity Curve validates the timestamp
+and trade count. The worker continues to own the equity ledger and durable
+audit journal.
+
+The three Recon adapters continue to use the single-target prompts in
+`prompts/runtime/`. The expanded Recon prompts require different tools and
+inputs. The pipeline consumes observed pool volume and age from DexScreener
+and security fields from the existing adapters. A missing critical Rug Check
+field blocks entry. A provider summary marked clear supplies no substitute
+for a missing field.
+
+The paper quote models zero gas and expected price impact. The worker applies
+its existing cash, position, and risk caps to the proposed USD amount before
+passing the approved paper size to Executor. Paper executor outputs cannot
+authorize offline signing. The existing transaction signer uses its
+separate approval type.

@@ -23,15 +23,15 @@ export async function reconB(call: CallAgent, identity: Handoff, request?: Fetch
     ? tool("rugcheck_xyz", "Fetch the Solana mint risk summary.", () => rugCheckXyz(identity, request))
     : tool("honeypot_is", "Fetch the EVM pair sell-simulation report.", () => honeypotIs(identity, request));
   const model = await call({
-    prompt: "recon-b-onchain", schema: reconBSchema, identity, data: {},
+    prompt: "recon-b-onchain", promptFile: "runtime/recon-b-onchain", schema: reconBSchema, identity, data: { identity, data: {} },
     tools: [tool("goplus", "Fetch GoPlus security flags.", () => goPlus(identity, request, token)), secondary],
   });
   if (readings.length !== 2) throw new CandidateError("Required security evidence missing");
   const findings = [...readings.map(({ value }) => value.assessment), model.assessment];
   const assessment = findings.includes("flagged") ? "flagged" : findings.includes("unknown") ? "unknown" : "clear";
   return {
-    value: { assessment, reasons: [...readings.map(({ value }) => value.reason), ...model.reasons] } satisfies
-      { assessment: Finding["assessment"]; reasons: string[] },
+    value: { assessment, checks_raw: Object.assign({}, ...readings.map(({ value }) => value.checks_raw)), reasons: [...readings.map(({ value }) => value.reason), ...model.reasons] } satisfies
+      { assessment: Finding["assessment"]; reasons: string[]; checks_raw: NonNullable<Finding["checks_raw"]> },
     observedAt: Math.min(...readings.map(({ observedAt }) => observedAt)),
   };
 }

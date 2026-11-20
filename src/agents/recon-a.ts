@@ -13,7 +13,7 @@ export async function reconA(call: CallAgent, identity: Handoff, request?: Fetch
   let dex: Timed<Awaited<ReturnType<typeof dexScreener>>> | undefined;
   let gecko: Timed<Awaited<ReturnType<typeof geckoTerminal>>> | undefined;
   const model = await call({
-    prompt: "recon-a-market-intel", schema: reconASchema, identity, data: { discovery_scope },
+    prompt: "recon-a-market-intel", promptFile: "runtime/recon-a-market-intel", schema: reconASchema, identity, data: { identity, data: { discovery_scope } },
     tools: [
       { name: "dexscreener", description: "Fetch price and liquidity for the configured pair.", run: async () => {
         const observedAt = Date.now();
@@ -29,6 +29,7 @@ export async function reconA(call: CallAgent, identity: Handoff, request?: Fetch
   });
   if (!dex || !gecko) throw new CandidateError("Market evidence missing");
   return { value: { summary: model.summary, price_usd: dex.value.price_usd,
+      vol_1h_usd: dex.value.vol_1h_usd, created_at_ms: dex.value.created_at_ms,
       provenance: { price_usd: { source: "dexscreener" as const, observed_at: dex.observedAt, value: dex.value.price_usd },
         liquidity_usd: { source: "aggregated" as const, observed_at: Math.min(dex.observedAt, gecko.observedAt),
           value: Math.min(dex.value.liquidity_usd, gecko.value.liquidity_usd) } },

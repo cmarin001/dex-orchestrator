@@ -60,7 +60,7 @@ async function main(): Promise<void> {
       equity.mark(position, position.entry_price_usd, Date.parse(event.at));
     } else if (event.status === "paper_close" && position && close) {
       positions.close(position);
-      equity.close(position, close.proceeds_cents);
+      equity.close(position, close.proceeds_cents, close.exit_at);
     } else if (event.stage === "position_mark" && identity) {
       const open = positions.get(identity);
       const point = chartPointSchema.safeParse(event.detail);

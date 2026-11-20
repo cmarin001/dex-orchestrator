@@ -39,6 +39,7 @@ OUTPUT (one object, no prose):
   "reason":"short string" }
 
 RULES:
+- For an aborted or skipped paper execution, use null for fill_price, size_usd, and gas_usd, and use "sim" as the tx_hash sentinel.
 - Never re-evaluate. Never resize. Never "improve" the plan.
 - Never invent a fill price if market.quote_price is missing → ERROR.
 - Deterministic given inputs.

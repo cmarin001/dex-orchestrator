@@ -5,8 +5,9 @@ import type { reconC } from "../agents/recon-c.js";
 import { isFresh } from "./ttl.js";
 
 type RecordedMarket = Awaited<ReturnType<typeof reconA>>;
-export type Market = Omit<RecordedMarket, "value"> & { value: Omit<RecordedMarket["value"], "provenance"> & Partial<Pick<RecordedMarket["value"], "provenance">> };
-export type Security = Awaited<ReturnType<typeof reconB>>;
+export type Market = Omit<RecordedMarket, "value"> & { value: Pick<RecordedMarket["value"], "price_usd" | "liquidity_usd" | "summary"> & Partial<RecordedMarket["value"]> };
+type RecordedSecurity = Awaited<ReturnType<typeof reconB>>;
+export type Security = Omit<RecordedSecurity, "value"> & { value: Pick<RecordedSecurity["value"], "assessment" | "reasons"> & Partial<RecordedSecurity["value"]> };
 export type Social = Awaited<ReturnType<typeof reconC>>;
 export type Freshness = { marketMs: number; securityMs: number };
 
