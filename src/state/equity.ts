@@ -1,3 +1,4 @@
+import type { EquityCurveInput } from "../../schemas/equity-curve.js";
 import { targetKey } from "../cache/merge.js";
 import type { Position } from "./positions.js";
 
@@ -13,6 +14,7 @@ export class Equity {
   readonly #returns = new Map<string, number>();
 
   readonly #observed = new Map<string, number>();
+  readonly #closed: EquityCurveInput["closed_trades"] = [];
   #realizedCents = 0;
   #high = 0;
   get availableCapital(): number { return this.initialCents + this.#realizedCents; }
@@ -24,11 +26,24 @@ export class Equity {
     this.#high = Math.max(this.#high, this.current_equity);
   }
 
-  close(position: Position, proceedsCents: number) {
+  closedTrades(): EquityCurveInput["closed_trades"] {
+    return this.#closed.slice();
+  }
+
+  oldestMarkAt(positions: readonly Position[], now: number): number {
+    return positions.reduce((oldest, position) => Math.min(oldest, this.#observed.get(targetKey(position)) ?? 0), now);
+  }
+
+  close(position: Position, proceedsCents: number, closedAt = Date.now()) {
     const key = targetKey(position);
     this.#returns.delete(key);
     this.#observed.delete(key);
-    this.restoreRealized(proceedsCents - position.cost_cents);
+    const pnlCents = proceedsCents - position.cost_cents;
+    this.restoreRealized(pnlCents);
+    const openedAt = position.exit_policy?.entry_at ?? closedAt;
+    this.#closed.push({ run_id: position.run_id, token: position.token, pnl_usd: pnlCents / 100,
+      slippage_bps: 0, hold_sec: Math.floor(Math.max(0, closedAt - openedAt) / 1000),
+      closed_at: Math.floor(closedAt / 1000) });
   }
 
   constructor(readonly initialCents: number) {

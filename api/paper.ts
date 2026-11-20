@@ -3,8 +3,8 @@ import { join } from "node:path";
 import type { Handoff } from "../schemas/common.js";
 import { normalizeAddress, targetSchema } from "../schemas/common.js";
 import { responsesAgent } from "../src/agents/call.js";
-import { reconA } from "../src/agents/recon-a.js";
-import { reconB } from "../src/agents/recon-b.js";
+import { z } from "zod";
+import { reconSnapshotSchema } from "../schemas/recon-snapshot.js";
 import { merge } from "../src/cache/merge.js";
 import type { AuditEvent } from "../src/logging/types.js";
 import { failureKind, log, logHttp, withLogContext } from "../src/logging/operational.js";
@@ -12,6 +12,8 @@ import { CandidateError } from "../src/orchestrator/errors.js";
 import { runCandidate } from "../src/orchestrator/pipeline.js";
 import { Equity } from "../src/state/equity.js";
 import { Positions } from "../src/state/positions.js";
+
+const requestSchema = z.strictObject({ recon_snapshot: reconSnapshotSchema.optional() });
 
 const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
   Response.json(body, { status, headers: { "cache-control": "no-store", ...headers } });
@@ -60,10 +62,14 @@ async function executePaper(identity: Handoff, request: Request, apiKey: string)
   const events: AuditEvent[] = [];
 
   try {
-    const [market, security] = await Promise.all([
-      reconA(call, identity), reconB(call, identity, undefined, process.env.GOPLUS_ACCESS_TOKEN),
-    ]);
-    const input = merge(identity, market, security, undefined, { marketMs: 120_000, securityMs: 120_000 });
+    let snapshot;
+    try {
+      const body = await request.text();
+      snapshot = requestSchema.parse(body.trim() ? JSON.parse(body) : {}).recon_snapshot;
+    } catch {
+      return json({ error: "invalid_recon_snapshot" }, 400);
+    }
+    const input = merge(identity, snapshot);
     const outcome = await runCandidate(input, {
       call, signal, audit: async (event) => { events.push(event); },
       equity: new Equity(100_000), positions: new Positions(), maxPositionBps: 100, maxOpenPositions: 1,
@@ -73,7 +79,7 @@ async function executePaper(identity: Handoff, request: Request, apiKey: string)
   } catch (error) {
     log("warn", "paper.failed", { failure_kind: signal.aborted ? "aborted" : failureKind(error) });
     if (signal.aborted) return json({ identity, error: "invocation_timed_out", events }, 504);
-    if (error instanceof CandidateError) return json({ identity, outcome: "skipped", events });
+    if (error instanceof CandidateError) return json({ identity, error: error.message, events }, 422);
     return json({ identity, error: "provider_or_pipeline_unavailable", events }, 502);
   }
 }

@@ -16,7 +16,7 @@ BEHAVIOR — compute in order:
 - wins = trades with pnl_usd > 0. win_rate = wins / trades_closed.
 - expectancy_usd = Σ pnl_usd / trades_closed.
 - avg_slippage_bps, avg_hold_sec = arithmetic means.
-- as_of = now.
+- Copy as_of from the input.
 
 OUTPUT (one object, no prose):
 { "equity_usd":n, "drawdown_pct":n, "win_rate":n,
@@ -26,4 +26,4 @@ RULES:
 - Deterministic. Same inputs → same output.
 - If closed_trades is empty → equity = starting_equity, drawdown=0,
   win_rate=0, expectancy=0, trades_closed=0.
-- You are the ONLY writer of `current_equity`. Nobody else changes it.
+- Your output is a projection. The runtime owns the actual equity ledger.

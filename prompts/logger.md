@@ -30,4 +30,4 @@ OUTPUT (one object, no prose):
 RULES:
 - Never reject. Never rewrite. Never interpret.
 - If `output` is malformed JSON, still log it — put "malformed: true"
-  in the row and populate gaps with "*".
+  in the row, preserve the raw string in output, and populate gaps with "*".
