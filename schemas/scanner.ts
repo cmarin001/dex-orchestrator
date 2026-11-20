@@ -18,7 +18,8 @@ export const scannerSchema = z.array(scannerRowSchema);
 export type ScannerRow = z.infer<typeof scannerRowSchema>;
 export type ScannerInput = {
   run_id: string;
-  feed: Array<Pick<ScannerRow, "chain" | "token" | "pair" | keyof typeof scannerFeedFields>>;
+  feed: Array<Pick<ScannerRow, "chain" | "token" | "pair" | keyof typeof scannerFeedFields> &
+    { social_score?: number | null; as_of?: number }>;
   config: {
     min_liquidity_usd: number;
     min_age_sec: number;

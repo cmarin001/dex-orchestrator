@@ -1,91 +1,46 @@
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Target } from "../../schemas/common.js";
-import { reconA } from "../agents/recon-a.js";
-import { reconB } from "../agents/recon-b.js";
-import { reconC } from "../agents/recon-c.js";
-import { merge, targetKey } from "../cache/merge.js";
-import type { Freshness, Market, Security } from "../cache/merge.js";
-import { TtlCache } from "../cache/ttl.js";
+import type { ReconCache } from "../cache/recon-cache.js";
 import { elapsed, failureKind, log, startTimer, withLogContext } from "../logging/operational.js";
 import { CandidateError, SystemError } from "./errors.js";
-import { discover } from "../tools/discovery.js";
 import type { DiscoveryScope } from "../tools/discovery.js";
 import { runCandidate } from "./pipeline.js";
 import type { Pipeline } from "./pipeline.js";
 
 export interface LoopOptions {
   targets: readonly Target[];
-  ttl: Freshness;
   intervalMs: number;
   breakerFailures: number;
   breakerCooldownMs: number;
-  socialEnabled: boolean;
   discovery?: DiscoveryScope;
   goPlusAccessToken?: string;
 }
 
-export async function runLoop(options: LoopOptions, pipeline: Pipeline, signal: AbortSignal): Promise<void> {
-  const marketCache = new TtlCache<Market["value"]>(options.ttl.marketMs);
-  const securityCache = new TtlCache<Security["value"]>(options.ttl.securityMs);
+export async function runLoop(options: LoopOptions, pipeline: Pipeline, signal: AbortSignal, cache: ReconCache): Promise<void> {
   let failures = 0;
-  let discoveryBaseline: Awaited<ReturnType<typeof discover>>["statistics"] | undefined;
   log("info", "loop.started", { count: options.targets.length });
   while (!signal.aborted) {
     const cycleStarted = startTimer();
     const started = Date.now();
     let delay = options.intervalMs;
-    let targets = options.targets;
-    let scope = null;
-    if (options.discovery) {
-      try {
-        const found = await discover(options.discovery, undefined, discoveryBaseline);
-        discoveryBaseline = found.statistics;
-        targets = [...new Map([...options.targets, ...found.targets].map(target => [targetKey(target), target])).values()];
-        scope = { chains: [...new Set(found.scope.sources.map(({ chain }) => chain))], triggers: found.scope.triggers,
-          pools_scanned: Object.values(found.counts).reduce((total, count) => total + count, 0) };
-        log("info", "discovery.completed", { count: scope.pools_scanned });
-        await pipeline.audit({ stage: "market_discovery", status: "ok", gaps: [], detail: { ...scope, counts: found.counts } });
-      } catch (error) {
-        discoveryBaseline = undefined;
-        log("warn", "discovery.failed", { failure_kind: failureKind(error) });
-        await pipeline.audit({ stage: "market_discovery", status: "failed", gaps: ["discovery_unavailable"],
-          detail: error instanceof Error ? error.message : "Unknown discovery error" });
-      }
-    }
+    const targets = cache.list();
     for (const target of targets) {
       if (signal.aborted) break;
       const identity = { ...target, run_id: randomUUID() };
-      const key = targetKey(target);
       const fields = { run_id: identity.run_id, chain: identity.chain };
       const candidateStarted = startTimer();
       try {
         await withLogContext(fields, async () => {
-          const cachedMarket = marketCache.get(key);
-          const cachedSecurity = securityCache.get(key);
-          log("debug", "recon.cache", { market_cache_hit: Boolean(cachedMarket), security_cache_hit: Boolean(cachedSecurity) });
-          const observations = await Promise.allSettled([
-            cachedMarket ?? reconA(pipeline.call, identity, undefined, scope),
-            cachedSecurity ?? reconB(pipeline.call, identity, undefined, options.goPlusAccessToken),
-            options.socialEnabled ? reconC(pipeline.call, identity) : undefined,
-          ] as const);
-          const [market, security, social] = observations;
-          if (market.status === "fulfilled") marketCache.set(key, market.value);
-          if (security.status === "fulfilled") securityCache.set(key, security.value);
-          if (social.status === "rejected") {
-            log("warn", "recon.social_unavailable", { failure_kind: failureKind(social.reason) });
-            await pipeline.audit({ identity, stage: "recon-c", status: "failed", gaps: ["social_unavailable"] });
+          if (cache.isRejected(target)) {
+            await pipeline.audit({ identity, stage: "pipeline", status: "skipped", gaps: ["cached_rug_fail"] });
+            log("info", "pipeline.skipped", { reason: "cached_rug_fail" });
+            return;
           }
-          for (const required of [market, security]) {
-            if (required.status === "rejected" && !(required.reason instanceof CandidateError)) {
-              throw required.reason;
-            }
-          }
-          const merged = merge(identity, marketCache.get(key), securityCache.get(key),
-            social.status === "fulfilled" ? social.value : undefined, options.ttl);
-          await pipeline.audit({ identity, stage: "merge", status: "ok", gaps: merged.gaps,
-            detail: { market: merged.market, security: merged.security, expires_at: merged.expires_at } });
-          const outcome = await runCandidate(merged, { ...pipeline, signal });
+          const merged = cache.read(identity);
+          await pipeline.audit({ identity, stage: "merge", status: merged.stale ? "skipped" : "ok", gaps: merged.gaps,
+            detail: { expires_at: merged.expires_at } });
+          const outcome = await runCandidate(merged, { ...pipeline, signal, rejectRecon: target => cache.reject(target) });
           log("info", "candidate.completed", { outcome, duration_ms: elapsed(candidateStarted) });
         });
         failures = 0;
@@ -95,7 +50,7 @@ export async function runLoop(options: LoopOptions, pipeline: Pipeline, signal: 
         });
         if (!(error instanceof CandidateError || error instanceof SystemError)) throw error;
         await pipeline.audit({ identity, stage: "pipeline", status: "failed",
-          gaps: [error.name], detail: error.message });
+          gaps: [error instanceof CandidateError ? error.message : error.name], detail: error.message });
         if (error instanceof CandidateError) continue;
         failures += 1;
         if (failures >= options.breakerFailures) {

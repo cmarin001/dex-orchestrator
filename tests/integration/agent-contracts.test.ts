@@ -48,7 +48,7 @@ test("six agent wrappers accept the specialized prompt contracts through the Res
     config: { min_liquidity_usd: 10_000, min_age_sec: 600, min_vol_1h_usd: 5000, top_n: 20, dedup_window_sec: 3600 },
   });
   assert.equal(scan.filter(row => row.skipped).length, 2);
-  assert.deepEqual(await rugCheck(call, identity, { ...candidate, checks_raw: raw }), rug);
+  assert.deepEqual(await rugCheck(call, identity, { age_sec: candidate.age_sec, checks_raw: raw, provenance: {}, sources_disagree: false }), rug);
   assert.throws(() => requireRugCheckPass("clear", { ...rug, verdict: "PASS" }, raw, 900), /risk_not_clear/);
   assert.equal((await sizer(call, identity, { rug: { verdict: "PASS" }, now,
     equity: { equity_usd: 1000, drawdown_pct: .05, as_of: now - 10 },
@@ -65,6 +65,7 @@ test("six agent wrappers accept the specialized prompt contracts through the Res
       pnl_usd, slippage_bps: 0, hold_sec: 60, closed_at: now - 60 + index })),
   }), equity);
   assert.equal(inputs.size, 6);
+  assert.deepEqual(inputs.get("rug-check"), { ...identity, age_sec: 900, checks_raw: raw, provenance: {}, sources_disagree: false });
   assert.ok(Array.isArray(inputs.get("logger")));
 
   wire.executor = { ...execution, status: "FILLED", fill_price: 2, size_usd: 15, gas_usd: 1 };

@@ -24,6 +24,10 @@ The Vercel entry point serves a status response at `GET /` and runs one
 isolated paper-trading candidate at `POST /api/paper`. Every invocation starts
 with a fresh simulated portfolio and returns its audit events in JSON. The
 continuous worker and persistent journal are available through `npm start`.
+Send a precomputed snapshot as `{ "recon_snapshot": { ... } }` in the
+authenticated POST. An empty request returns a `stale_recon` skip. The
+Vercel function has no shared state with the worker. See the
+[Recon snapshot contract](docs/schemas.md#recon-snapshots).
 
 Set these project environment variables to enable paper runs:
 
@@ -31,8 +35,8 @@ Set these project environment variables to enable paper runs:
 - `PAPER_RUN_SECRET` for the bearer token protecting the POST endpoint.
 - `PAPER_RUN_TARGET` to a single JSON object with `chain`, `token`, and `pair`.
 
-`OPENAI_MODEL` and `GOPLUS_ACCESS_TOKEN` are optional. Keep keys in Vercel
-environment variables. No wallet keys are required. The deployment includes no
+`OPENAI_MODEL` is optional. Keep keys in Vercel environment variables.
+The background worker optionally accepts `GOPLUS_ACCESS_TOKEN`. The deployment includes no
 scheduled runs.
 
 ## TradeKeel paper dashboard

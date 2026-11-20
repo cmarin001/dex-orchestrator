@@ -7,12 +7,15 @@ import { Keypair, SystemProgram, TransactionMessage, VersionedTransaction } from
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { bytesToHex, recoverTransactionAddress } from "viem";
 import type { TransactionSerializedLegacy } from "viem";
+import { POST as postPaper } from "../../api/paper.js";
 import type { Handoff } from "../../schemas/common.js";
 import type { ScannerInput } from "../../schemas/scanner.js";
 import { scanner } from "../../src/agents/scanner.js";
 import { responsesAgent } from "../../src/agents/call.js";
 import type { CallAgent } from "../../src/agents/call.js";
 import { signApprovedTransaction } from "../../src/agents/executor.js";
+import type { ReconSnapshot } from "../../schemas/recon-snapshot.js";
+import { ReconCache } from "../../src/cache/recon-cache.js";
 import { merge } from "../../src/cache/merge.js";
 import { fileAudit, replayPositions } from "../../src/logging/logger.js";
 import type { AuditEvent } from "../../src/logging/types.js";
@@ -27,8 +30,6 @@ const identity: Handoff = {
   token: "0x1111111111111111111111111111111111111111",
   pair: "0x2222222222222222222222222222222222222222",
 };
-const checks = { renounced: true, mint_auth: true, freeze_auth: true, lp_locked_or_burned: true,
-  honeypot: true, tax_ok: true, blacklist: false, deployer_ok: true, age_ok: true, holder_conc_ok: true };
 const raw = { renounced: true, mint_auth_disabled: true, freeze_auth_disabled: true,
   lp_locked_or_burned: true, honeypot_sim_ok: true };
 const feedRow = { chain: identity.chain, token: identity.token, pair: identity.pair,
@@ -36,8 +37,7 @@ const feedRow = { chain: identity.chain, token: identity.token, pair: identity.p
 const scanRow = { ...identity, ...feedRow, discovered_at: 1_795_200_000, rank_score: 1, reason: "fixture", skipped: false };
 const fakeAgent: CallAgent = async ({ schema, prompt, identity: handoff, data }) => {
   const output = {
-    scanner: () => [{ ...scanRow, ...(data as ScannerInput).feed[0], ...handoff }],
-    "rug-check": () => ({ ...handoff, verdict: "PASS", checks, reason: "fixture" }),
+    scanner: () => (data as ScannerInput).feed.map(({ social_score, as_of, ...item }) => ({ ...scanRow, ...item, ...handoff })),
     sizer: () => ({ ...handoff, status: "SIZED", size_usd: 50, size_tokens: 25, max_slippage_bps: 150,
       equity_at_decision: 1000, equity_age_sec: 0, risk_pct_used: .02, reason: "fixture" }),
     executor: () => ({ ...handoff, action: "entry", status: "FILLED", fill_price: 2, size_usd: 10,
@@ -54,10 +54,20 @@ const fakeAgent: CallAgent = async ({ schema, prompt, identity: handoff, data })
   return schema.parse(output[prompt as keyof typeof output]());
 };
 
-function snapshot(assessment: "clear" | "unknown" = "clear") {
+function observation(assessment: "clear" | "unknown" = "clear", sources_disagree = false): ReconSnapshot {
+  const { chain, token, pair } = identity;
   const now = Date.now();
-  return merge(identity, { observedAt: now, value: { price_usd: 2, liquidity_usd: 100_000, summary: "", vol_1h_usd: 20_000, created_at_ms: now - 900_000 } },
-    { observedAt: now, value: { assessment, reasons: [], checks_raw: raw } }, undefined, { marketMs: 30_000, securityMs: 30_000 });
+  const fact = (value: number) => ({ value, fetched_at: now, source: "fixture" });
+  return { target: { chain, token, pair },
+    market: { trigger: "new_pair", source_fetched_at: now, price_usd: fact(2), liquidity_usd: fact(100_000),
+      vol_1h_usd: fact(20_000), age_sec: fact(900) },
+    security: { assessment, checks_raw: raw, sources_disagree, source_fetched_at: now,
+      provenance: { goplus: { source: "goplus", fetched_at: now, ok: assessment === "clear" } } },
+  };
+}
+
+function snapshot(assessment: "clear" | "unknown" = "clear") {
+  return merge(identity, observation(assessment), 30_000);
 }
 
 test("runs the six stages, caps size, and replays the one paper fill from the audit", async (t) => {
@@ -85,7 +95,7 @@ test("blocks unknown security and snapshots that expire while Executor runs", as
   const expiring = snapshot();
   let now = Date.now();
   const call: CallAgent = async (request) => {
-    if (request.prompt === "executor") now += 30_000;
+    if (request.prompt === "executor") now += 30_001;
     return fakeAgent(request);
   };
   assert.equal(await runCandidate(expiring, { ...deps, call, now: () => now }), "skipped");
@@ -95,14 +105,17 @@ test("blocks unknown security and snapshots that expire while Executor runs", as
 test("opens the circuit breaker after repeated mandatory system errors", async () => {
   const abort = new AbortController();
   const events: AuditEvent[] = [];
-  await runLoop({ targets: [identity], ttl: { marketMs: 50, securityMs: 50 },
-    intervalMs: 1, breakerFailures: 2, breakerCooldownMs: 50, socialEnabled: false },
+  const cache = new ReconCache();
+  const ready = observation();
+  cache.track(ready.target, false);
+  cache.put(ready);
+  await runLoop({ targets: [identity], intervalMs: 1, breakerFailures: 2, breakerCooldownMs: 50 },
   {
     maxPositionBps: 100, maxOpenPositions: 2, equity: new Equity(100_000), positions: new Positions(),
     call: async () => { throw new SystemError("simulated"); },
     audit: async (event) => { events.push(event); if (event.stage === "breaker") abort.abort(); },
-  }, abort.signal);
-  assert.deepEqual(events.map(({ stage }) => stage), ["pipeline", "pipeline", "breaker"]);
+  }, abort.signal, cache);
+  assert.deepEqual(events.map(({ stage }) => stage), ["merge", "pipeline", "merge", "pipeline", "breaker"]);
 });
 
 test("submits the prompt verbatim, round-trips tool evidence and rejects invalid structured output", async (t) => {
@@ -150,4 +163,49 @@ test("signs prebuilt EVM and Solana transactions in code without broadcasting", 
   const bytes = await signApprovedTransaction({ ...approval, chain: "solana" }, expires, request);
   assert.ok(VersionedTransaction.deserialize(bytes).signatures[0]?.some((byte) => byte !== 0));
   await assert.rejects(signApprovedTransaction({ ...approval, chain: "solana" }, Date.now() - 1, request), CandidateError);
+});
+
+test("skips a cache miss without agent calls and rejects ambiguous security before sizing", async () => {
+  const events: AuditEvent[] = [];
+  const prompts: string[] = [];
+  const rejected: Handoff[] = [];
+  const call: CallAgent = async request => {
+    prompts.push(request.prompt);
+    return fakeAgent(request);
+  };
+  const deps = { call, audit: async (event: AuditEvent) => { events.push(event); },
+    positions: new Positions(), equity: new Equity(100_000), maxPositionBps: 100, maxOpenPositions: 2,
+    rejectRecon: (target: Handoff) => { rejected.push(target); } };
+  assert.equal(await runCandidate(merge(identity, undefined), deps), "skipped");
+  assert.deepEqual(prompts, []);
+  assert.deepEqual(events[0]?.detail, [{ ...identity, skipped: true, reason: "stale_recon" }]);
+  assert.equal(await runCandidate(merge(identity, observation("clear", true)), deps), "skipped");
+  assert.deepEqual(prompts, ["scanner"]);
+  assert.deepEqual(rejected, [identity]);
+  assert.equal((events.find(event => event.stage === "rug-check")?.detail as { reason: string }).reason,
+    "ambiguous critical: conflicting sources");
+});
+
+test("the Vercel paper endpoint skips an empty snapshot without network access", async t => {
+  const { chain, token, pair } = identity;
+  const env = { PAPER_RUN_SECRET: "fixture-secret", OPENAI_API_KEY: "test-key", PAPER_RUN_TARGET: JSON.stringify({ chain, token, pair }) };
+  const previous = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
+  Object.assign(process.env, env);
+  t.after(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  const fetch = t.mock.method(globalThis, "fetch", async () => { throw new Error("Unexpected network access"); });
+  const post = (body?: string) => postPaper(new Request("https://example.test/api/paper", {
+    method: "POST", headers: { authorization: "Bearer fixture-secret" }, body,
+  }));
+  const empty = await post();
+  assert.equal(empty.status, 200);
+  const result = await empty.json() as { outcome: string; events: AuditEvent[] };
+  assert.equal(result.outcome, "skipped");
+  assert.deepEqual(result.events.map(event => event.gaps), [["stale_recon"], ["stale_recon"]]);
+  assert.equal((await post(JSON.stringify({ recon_snapshot: { target: { chain } } }))).status, 400);
+  assert.equal(fetch.mock.callCount(), 0);
 });

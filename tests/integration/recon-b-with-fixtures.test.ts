@@ -33,7 +33,8 @@ const approvingModel: CallAgent = async ({ identity, schema, tools }) => {
 
 test("Recon B treats missing GoPlus evidence in the recording as unknown even if the model approves", async () => {
   const result = await reconB(approvingModel, ethereum, fixtureFetch);
-  assert.equal(result.value.assessment, "unknown");
+  assert.equal(result.assessment, "unknown");
+  assert.equal(result.provenance.goplus?.ok, false);
   assert.equal((await honeypotIs(ethereum, fixtureFetch)).assessment, "clear");
 });
 

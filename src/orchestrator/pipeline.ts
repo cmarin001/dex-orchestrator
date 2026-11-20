@@ -4,7 +4,7 @@ import { logger } from "../agents/logger.js";
 import { defaultRisk } from "../../schemas/risk-config.js";
 import type { RiskConfig } from "../../schemas/risk-config.js";
 import type { ExitPolicy } from "../../schemas/exit-policy.js";
-import { requireRugCheckPass, rugCheck } from "../agents/rug-check.js";
+import { evaluateRugCheck, requireRugCheckPass } from "../agents/rug-check.js";
 import { scanner } from "../agents/scanner.js";
 import type { LogHop } from "../../schemas/logger.js";
 import { riskBudget, sizer } from "../agents/sizer.js";
@@ -28,42 +28,45 @@ export interface Pipeline {
   now?: () => number;
   equityMaxAgeMs?: number;
   riskConfig?: () => Promise<RiskConfig>;
+  rejectRecon?: (target: Merged["identity"]) => void;
   exitMode?: "profit_only" | "stop_loss";
 }
 
 export async function runCandidate(input: Merged, dependencies: Pipeline): Promise<"paper_fill" | "skipped"> {
-  const { identity, market, security, expires_at } = input;
+  const { identity, feed_entry, quote, expires_at } = input;
   const { audit, call, equity, positions, maxPositionBps, maxOpenPositions, signal, now = Date.now } = dependencies;
-  const fresh = () => expires_at !== null && now() < expires_at;
+  const fresh = () => expires_at !== null && now() <= expires_at;
   const fields = { run_id: identity.run_id, chain: identity.chain };
   const record = async (stage: string, detail: unknown) => {
     await audit({ identity, stage, status: "ok", gaps: [], detail });
     log("debug", "pipeline.stage", { ...fields, stage, outcome: "ok" });
   };
   const skip = async (reason: string) => {
-    await audit({ identity, stage: "pipeline", status: "skipped", gaps: [...input.gaps, reason] });
-    log("info", "pipeline.skipped", { ...fields, reason, gap_count: input.gaps.length + 1 });
+    await audit({ identity, stage: "pipeline", status: "skipped", gaps: [...new Set([...input.gaps, reason])] });
+    log("info", "pipeline.skipped", { ...fields, reason, gap_count: new Set([...input.gaps, reason]).size });
     return "skipped" as const;
   };
 
-  if (!market || !security || !fresh()) return skip("mandatory_recon_missing_or_stale");
+  if (!feed_entry || !quote || !fresh()) {
+    const reason = input.gap ?? "stale_recon";
+    await audit({ identity, stage: "scanner", status: "skipped", gaps: [reason],
+      detail: [{ ...identity, skipped: true, reason }] });
+    return skip(reason);
+  }
   const open = positions.get(identity);
   if (open) {
     if (!open.exit_policy) {
-      equity.mark(open, market.price_usd, market.provenance?.price_usd.observed_at ?? now());
-      await record("equity-mark", { current_equity: equity.current_equity, price_usd: market.price_usd });
+      equity.mark(open, quote.value, quote.fetched_at);
+      await record("equity-mark", { current_equity: equity.current_equity, price_usd: quote.value });
     }
     return skip("position_already_open");
   }
-  const { vol_1h_usd, created_at_ms, liquidity_usd } = market;
-  if (vol_1h_usd === undefined || created_at_ms === undefined || created_at_ms > now()) return skip("scanner_evidence_missing");
-  const age_sec = Math.floor((now() - created_at_ms) / 1000);
+  const { vol_1h_usd, liquidity_usd, age_sec } = feed_entry;
   const scannerLimits = { min_liquidity_usd: 15_000, min_age_sec: 600, min_vol_1h_usd: 10_000,
     top_n: 20, dedup_window_sec: 3600 };
   const rows = await scanner(call, identity, {
     run_id: identity.run_id,
-    feed: [{ chain: identity.chain, token: identity.token, pair: identity.pair,
-      trigger: "new_pair", liquidity_usd, vol_1h_usd, age_sec }],
+    feed: [feed_entry],
     config: scannerLimits, seen: [], now: Math.floor(now() / 1000),
   });
   await record("scanner", rows);
@@ -71,11 +74,13 @@ export async function runCandidate(input: Merged, dependencies: Pipeline): Promi
   if (!scan || liquidity_usd < scannerLimits.min_liquidity_usd || age_sec < scannerLimits.min_age_sec ||
       vol_1h_usd < scannerLimits.min_vol_1h_usd) return skip("scanner_rejected");
 
-  const checks_raw = security.checks_raw ?? {};
-  const risk = await rugCheck(call, identity, { ...scan, checks_raw });
+  if (!fresh()) return skip("stale_recon");
+  const { checks_raw, assessment, sources_disagree, provenance } = input;
+  const risk = evaluateRugCheck(identity, { checks_raw, assessment, sources_disagree, provenance, age_sec });
   await record("rug-check", risk);
+  if (risk.verdict === "FAIL") dependencies.rejectRecon?.(identity);
   let pass;
-  try { pass = requireRugCheckPass(security.assessment, risk, checks_raw, age_sec); }
+  try { pass = requireRugCheckPass(assessment, risk, checks_raw, age_sec); }
   catch (error) {
     if (!(error instanceof CandidateError)) throw error;
     return skip("risk_not_clear");
@@ -89,14 +94,14 @@ export async function runCandidate(input: Merged, dependencies: Pipeline): Promi
   if (availableCents <= 0 || positions.count >= maxOpenPositions) {
     return skip("position_limit");
   }
-  const budget = riskBudget(config, equity.drawdown_pct, currentEquity, market.liquidity_usd);
+  const budget = riskBudget(config, equity.drawdown_pct, currentEquity, scan.liquidity_usd);
   // The paper quote has no execution costs or price-impact estimate.
   const decisionAt = Math.floor(now() / 1000);
   const proposal = await sizer(call, identity, {
     rug: pass,
     equity: { equity_usd: currentEquity / 100, drawdown_pct: equity.drawdown_pct,
       as_of: Math.floor(equity.oldestMarkAt(positions.list(), now()) / 1000) },
-    market: { liquidity_usd, volatility_pct: 0, gas_usd: 0, reference_price: market.price_usd },
+    market: { liquidity_usd: scan.liquidity_usd, volatility_pct: 0, gas_usd: 0, reference_price: quote.value },
     config: { max_risk_pct_per_trade: config.max_risk_pct_per_trade,
       max_position_vs_pool_depth: config.max_position_vs_pool_depth, max_slippage_bps: config.max_slippage_bps,
       halt_new_entries_dd: config.halt_new_entries_dd, max_equity_age_sec: (dependencies.equityMaxAgeMs ?? 60_000) / 1000 },
@@ -110,28 +115,28 @@ export async function runCandidate(input: Merged, dependencies: Pipeline): Promi
   await record("sizer", { proposal, approved_cents: costCents });
   if (costCents === 0) return skip("zero_size");
 
-  const exitBase = { entry_price: market.price_usd, entry_at: now(), min_profit_bps_for_exit: 25,
+  const exitBase = { entry_price: quote.value, entry_at: now(), min_profit_bps_for_exit: 25,
     timeout_ladder: config.timeout_ladder, max_hold_sec: 3600 };
   const exit_policy: ExitPolicy = dependencies.exitMode === "stop_loss"
     ? { ...exitBase, mode: "stop_loss", stop_loss_bps: 100 }
     : { ...exitBase, mode: "profit_only" };
   const recommendation = await executor(call, identity, { action: "entry", position: null,
     sizer: { status: proposal.status, size_usd: costCents / 100, max_slippage_bps: config.max_slippage_bps },
-    market: { quote_price: market.price_usd, expected_slippage_bps: 0, gas_usd: 0, now: Math.floor(now() / 1000) } });
+    market: { quote_price: quote.value, expected_slippage_bps: 0, gas_usd: 0, now: Math.floor(now() / 1000) } });
   await record("executor", recommendation);
   if (recommendation.action !== "entry" || recommendation.status !== "FILLED" ||
-      recommendation.fill_price !== market.price_usd || recommendation.size_usd !== costCents / 100 ||
+      recommendation.fill_price !== quote.value || recommendation.size_usd !== costCents / 100 ||
       recommendation.slippage_bps !== 0 || recommendation.gas_usd !== 0 || recommendation.tx_hash !== "sim") {
     return skip("executor_rejected");
   }
   if (!fresh() || signal?.aborted) return skip("expired_before_fill");
 
-  const position = { ...identity, cost_cents: costCents, entry_price_usd: market.price_usd,
+  const position = { ...identity, cost_cents: costCents, entry_price_usd: quote.value,
     ...(dependencies.exitMode ? { exit_policy: { ...exit_policy, entry_at: now() } } : {}) };
   await audit({ identity, stage: "executor", status: "paper_fill", gaps: [], position });
   positions.record(position);
   log("info", "position.opened", { ...fields, outcome: "paper_fill" });
-  equity.mark(position, market.price_usd, market.provenance?.price_usd.observed_at ?? now());
+  equity.mark(position, quote.value, quote.fetched_at);
 
   const hops: LogHop[] = [
     { agent: "scanner", output: scan }, { agent: "rug", output: risk },
@@ -152,7 +157,7 @@ export async function runCandidate(input: Merged, dependencies: Pipeline): Promi
   try {
     const trace = await logger(call, identity, hops);
     const gaps = [...new Set([
-      ...(!input.social || input.social.sentiment === "unavailable" ? ["social_unavailable"] : []),
+      ...(feed_entry.social_score === null ? ["social_unavailable"] : []),
       ...trace.rows.flatMap(row => row.gaps),
     ])];
     await audit({ identity, stage: "logger", status: "ok", detail: trace, gaps });

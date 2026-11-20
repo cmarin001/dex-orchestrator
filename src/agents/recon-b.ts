@@ -1,7 +1,9 @@
 import type { Handoff } from "../../schemas/common.js";
 import { reconBSchema } from "../../schemas/recon-b.js";
 import type { Timed } from "../cache/ttl.js";
-import { CandidateError } from "../orchestrator/errors.js";
+import type { SecuritySnapshot } from "../../schemas/recon-snapshot.js";
+import type { RugChecksRaw } from "../../schemas/rug-check.js";
+import { failureKind, log } from "../logging/operational.js";
 import type { Fetch } from "../tools/dexscreener.js";
 import { goPlus } from "../tools/goplus.js";
 import type { Finding } from "../tools/goplus.js";
@@ -9,13 +11,19 @@ import { honeypotIs } from "../tools/honeypot-is.js";
 import { rugCheckXyz } from "../tools/rugcheck-xyz.js";
 import type { CallAgent, Tool } from "./call.js";
 
-export async function reconB(call: CallAgent, identity: Handoff, request?: Fetch, token?: string) {
-  const readings: Timed<Finding>[] = [];
+const requiredChecks = new Set<keyof RugChecksRaw>(["renounced", "mint_auth_disabled",
+  "freeze_auth_disabled", "lp_locked_or_burned", "honeypot_sim_ok"]);
+
+export async function reconB(call: CallAgent, identity: Handoff, request?: Fetch, token?: string): Promise<SecuritySnapshot & { reasons: string[] }> {
+  const readings = new Map<string, Timed<Finding>>();
   function tool(name: string, description: string, read: () => Promise<Finding>): Tool {
     return { name, description, run: async () => {
       const observedAt = Date.now();
-      const value = await read();
-      readings.push({ value, observedAt });
+      const value = await read().catch((error: unknown): Finding => {
+        log("warn", "recon.security_source_failed", { provider: name, failure_kind: failureKind(error) });
+        return { assessment: "unknown", reason: name + " unavailable" };
+      });
+      readings.set(name, { value, observedAt });
       return value;
     } };
   }
@@ -26,12 +34,32 @@ export async function reconB(call: CallAgent, identity: Handoff, request?: Fetch
     prompt: "recon-b-onchain", promptFile: "runtime/recon-b-onchain", schema: reconBSchema, identity, data: { identity, data: {} },
     tools: [tool("goplus", "Fetch GoPlus security flags.", () => goPlus(identity, request, token)), secondary],
   });
-  if (readings.length !== 2) throw new CandidateError("Required security evidence missing");
-  const findings = [...readings.map(({ value }) => value.assessment), model.assessment];
-  const assessment = findings.includes("flagged") ? "flagged" : findings.includes("unknown") ? "unknown" : "clear";
-  return {
-    value: { assessment, checks_raw: Object.assign({}, ...readings.map(({ value }) => value.checks_raw)), reasons: [...readings.map(({ value }) => value.reason), ...model.reasons] } satisfies
-      { assessment: Finding["assessment"]; reasons: string[]; checks_raw: NonNullable<Finding["checks_raw"]> },
-    observedAt: Math.min(...readings.map(({ observedAt }) => observedAt)),
-  };
+  const checks_raw: RugChecksRaw = {};
+  const provenance: SecuritySnapshot["provenance"] = {};
+  const required = ["goplus", secondary.name];
+  let sources_disagree = false;
+  for (const source of required) {
+    const reading = readings.get(source);
+    const fetched_at = reading?.observedAt ?? Date.now();
+    provenance[source] = { source, fetched_at, ok: !!reading && reading.value.assessment !== "unknown" };
+    for (const [key, value] of Object.entries(reading?.value.checks_raw ?? {})) {
+      if (value == null) continue;
+      const field = key as keyof RugChecksRaw;
+      const previous = checks_raw[field];
+      const critical = requiredChecks.has(field);
+      if (critical && previous != null && previous !== value) sources_disagree = true;
+      const largerIsRiskier = field === "blacklist_present" || field === "deployer_rugged_before";
+      if (previous != null && !(typeof value === "boolean"
+        ? value === largerIsRiskier : typeof previous === "number" && value > previous)) continue;
+      Object.assign(checks_raw, { [field]: value });
+      provenance[field] = { source, fetched_at, ok: true };
+    }
+  }
+  const observations = [...readings.values()];
+  const findings = observations.map(({ value }) => value.assessment);
+  const assessment = findings.includes("flagged") || model.assessment === "flagged" ? "flagged"
+    : required.some(source => !provenance[source]?.ok) || model.assessment === "unknown" ? "unknown" : "clear";
+  return { assessment, checks_raw, provenance, sources_disagree,
+    source_fetched_at: Math.min(...required.map(source => provenance[source]!.fetched_at)),
+    reasons: [...observations.map(({ value }) => value.reason), ...model.reasons] };
 }
