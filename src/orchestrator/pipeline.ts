@@ -94,6 +94,8 @@ export async function runCandidate(input: Merged, dependencies: Pipeline): Promi
   if (availableCents <= 0 || positions.count >= maxOpenPositions) {
     return skip("position_limit");
   }
+  const capacity = equity.entryCapacityCents(positions.committedCents, config.halt_new_entries_dd);
+  if (!capacity) return skip("portfolio_loss_budget_exhausted");
   const budget = riskBudget(config, equity.drawdown_pct, currentEquity, scan.liquidity_usd);
   // The paper quote has no execution costs or price-impact estimate.
   const decisionAt = Math.floor(now() / 1000);
@@ -111,8 +113,8 @@ export async function runCandidate(input: Merged, dependencies: Pipeline): Promi
     await record("sizer", proposal);
     return skip(proposal.status === "HALTED" ? "sizer_halted" : "sizer_refused");
   }
-  const costCents = sizePosition(Math.floor(Math.min(proposal.size_usd, availableCents / 100) * 100), currentEquity, Math.min(availableCents, budget), maxPositionBps);
-  await record("sizer", { proposal, approved_cents: costCents });
+  const costCents = sizePosition(Math.floor(Math.min(proposal.size_usd, availableCents / 100) * 100), currentEquity, Math.min(capacity, budget), maxPositionBps);
+  await record("sizer", { proposal, approved_cents: costCents, portfolio_capacity_cents: capacity });
   if (costCents === 0) return skip("zero_size");
 
   const exitBase = { entry_price: quote.value, entry_at: now(), min_profit_bps_for_exit: 25,
@@ -128,6 +130,16 @@ export async function runCandidate(input: Merged, dependencies: Pipeline): Promi
       recommendation.fill_price !== quote.value || recommendation.size_usd !== costCents / 100 ||
       recommendation.slippage_bps !== 0 || recommendation.gas_usd !== 0 || recommendation.tx_hash !== "sim") {
     return skip("executor_rejected");
+  }
+  const latest = await dependencies.riskConfig?.() ?? config;
+  if (!equity.hasFreshMarks(positions.list(), now(), dependencies.equityMaxAgeMs ?? 60_000)) {
+    return skip("equity_marks_stale");
+  }
+  const remaining = equity.entryCapacityCents(positions.committedCents, latest.halt_new_entries_dd);
+  const latestBudget = riskBudget(latest, equity.drawdown_pct, equity.current_equity, scan.liquidity_usd);
+  if (positions.get(identity) || positions.count >= maxOpenPositions ||
+      sizePosition(costCents, equity.current_equity, Math.min(remaining, latestBudget), maxPositionBps) < costCents) {
+    return skip("entry_limit_changed");
   }
   if (!fresh() || signal?.aborted) return skip("expired_before_fill");
 

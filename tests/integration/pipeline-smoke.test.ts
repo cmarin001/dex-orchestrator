@@ -209,3 +209,20 @@ test("the Vercel paper endpoint skips an empty snapshot without network access",
   assert.equal((await post(JSON.stringify({ recon_snapshot: { target: { chain } } }))).status, 400);
   assert.equal(fetch.mock.callCount(), 0);
 });
+
+test("a tightened portfolio limit while Executor runs prevents the paper fill", async () => {
+  const { defaultRisk } = await import("../../schemas/risk-config.js");
+  let limit = .15;
+  const events: AuditEvent[] = [];
+  const call: CallAgent = async request => {
+    if (request.prompt === "executor") limit = .001;
+    return fakeAgent(request);
+  };
+  const positions = new Positions();
+  assert.equal(await runCandidate(snapshot(), { call, positions, equity: new Equity(100_000),
+    maxPositionBps: 100, maxOpenPositions: 2, audit: async event => { events.push(event); },
+    riskConfig: async () => ({ ...defaultRisk, halt_new_entries_dd: limit }) }), "skipped");
+  assert.equal(positions.count, 0);
+  assert.deepEqual(events.at(-1)?.gaps, ["entry_limit_changed"]);
+  assert.ok(events.every(event => event.status !== "paper_fill"));
+});

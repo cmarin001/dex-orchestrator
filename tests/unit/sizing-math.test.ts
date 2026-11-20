@@ -20,3 +20,12 @@ test("marks at current value without double counting previous marks", () => {
   equity.mark(position, 1);
   assert.equal(equity.current_equity, 99_500);
 });
+
+test("reserves cash against the portfolio peak even if every holding becomes worthless", () => {
+  const equity = new Equity(100_000);
+  assert.equal(equity.entryCapacityCents(14_500, .15), 500);
+  equity.restoreRealized(-500);
+  assert.equal(equity.entryCapacityCents(14_500, .15), 0);
+  equity.restoreRealized(10_500);
+  assert.equal(equity.entryCapacityCents(10_000, .15), 6500);
+});

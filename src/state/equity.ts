@@ -18,6 +18,11 @@ export class Equity {
   #realizedCents = 0;
   #high = 0;
   get availableCapital(): number { return this.initialCents + this.#realizedCents; }
+  entryCapacityCents(committedCents: number, drawdownLimit: number): number {
+    const reserve = this.#high - Math.floor(this.#high * drawdownLimit);
+    return Math.max(0, this.availableCapital - committedCents - reserve);
+  }
+
   get drawdown_pct(): number {
     return this.#high ? (this.#high - this.current_equity) / this.#high : 0;
   }
