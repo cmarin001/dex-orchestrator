@@ -18,3 +18,18 @@ flowchart TD
 - Code is the only signing authority. The shipped entry point records simulated positions and performs zero transactions. The offline signing entry point accepts a trusted, prebuilt transaction. A live adapter must validate quote binding, permitted routes and recipients, slippage, balance, fees, nonce or blockhash, simulation, broadcast idempotency, and settlement before it can replace the paper execution path. The optional loopback sidecar client is intended for a separately deployed signer.
 
 [DexScreener](https://docs.dexscreener.com/api/reference) · [GeckoTerminal](https://api.geckoterminal.com/docs/index.html) · [GoPlus](https://docs.gopluslabs.io/reference/api-overview) · [Honeypot.is](https://docs.honeypot.is/ishoneypot) · [RugCheck](https://api.rugcheck.xyz/swagger/index.html)
+
+## Portfolio loss budget
+
+Before a paper entry, the worker reserves cash equal to peak marked equity
+minus the configured drawdown allowance. Only cash above that reserve can
+fund another position. This treats every existing holding and the proposed
+purchase as capable of losing their entire value. For example, with a
+$1,000 peak and a 15% allowance, $855 in uncommitted cash leaves $5 for
+new entries. Per-position and pool limits can reduce that amount further.
+
+After Executor responds, the worker reloads the risk settings and checks
+the portfolio again before journaling a fill. Tightening the budget blocks
+an outstanding proposal. This governs new exposure in the single-worker
+paper ledger. Existing holdings can fall, marks can lag, and paper fills
+assume zero trading costs.
