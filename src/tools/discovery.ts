@@ -38,7 +38,7 @@ function spike(value: number, previous: number | undefined, ratio: number) {
 
 export async function discover(scope: DiscoveryScope, request: Fetch = fetch,
   prior: ReadonlyMap<string, Statistics> = new Map(), now = Date.now()) {
-  const candidates = new Map<string, Target>();
+  const candidates = new Map<string, Target & { trigger: z.infer<typeof discoveryTrigger> }>();
   const statistics = new Map<string, Statistics>();
   const counts: Partial<Record<Chain, number>> = {};
   for (const source of scope.sources) {
@@ -51,11 +51,11 @@ export async function discover(scope: DiscoveryScope, request: Fetch = fetch,
         const last = prior.get(pool);
         statistics.set(pool, current);
         const age = now - current.createdAt;
-        const selected =
-          (scope.triggers.includes("new_pair") && age >= 0 && age <= 86_400_000) ||
-          (scope.triggers.includes("vol_spike") && spike(current.volume, last?.volume, 2)) ||
-          (scope.triggers.includes("liq_spike") && spike(current.liquidity, last?.liquidity, 1.5));
-        if (selected && !candidates.has(key) && candidates.size < scope.max_candidates) candidates.set(key, target);
+        const trigger = scope.triggers.find(mode =>
+          mode === "new_pair" ? age >= 0 && age <= 86_400_000 :
+          mode === "vol_spike" ? spike(current.volume, last?.volume, 2) :
+          spike(current.liquidity, last?.liquidity, 1.5));
+        if (trigger && !candidates.has(key) && candidates.size < scope.max_candidates) candidates.set(key, { ...target, trigger });
       }
     }
   }
