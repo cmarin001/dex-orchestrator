@@ -5,6 +5,7 @@ import { evmKey, bitcoinKey, solanaKey } from "./key-source.js";
 import { bitcoinAdapter } from "./signers/bitcoin.js";
 import { evmAdapter, networks } from "./signers/evm.js";
 import { solanaAdapter } from "./signers/solana.js";
+import { secretText } from "../config/secrets.js";
 
 export function usdCents(value: string | undefined) {
   if (!value || !/^\d+(\.\d{1,2})?$/.test(value)) throw new Error("USD_CAP_INVALID");
@@ -15,7 +16,7 @@ export function usdCents(value: string | undefined) {
 export async function configuredWallet(env: NodeJS.ProcessEnv) {
   const config = walletConfigSchema.parse({
     mode:env.WALLET_MODE ?? "env",chain:env.LIVE_CHAIN ?? "base",
-    rpc_url:env.LIVE_RPC_URL, daily_limit_cents:usdCents(env.DAILY_LIMIT_USD),
+    rpc_url:await secretText(env,"LIVE_RPC_URL"), daily_limit_cents:usdCents(env.DAILY_LIMIT_USD),
     per_trade_limit_cents:usdCents(env.PER_TRADE_LIMIT_USD),max_fee_native:env.LIVE_MAX_FEE_NATIVE,
     mev_protection:z.enum(["true","false"]).default("false").parse(env.MEV_PROTECTION) === "true",
     confirmations:!env.LIVE_CONFIRMATIONS ? undefined : Number(env.LIVE_CONFIRMATIONS),
@@ -40,8 +41,8 @@ export async function configuredWallet(env: NodeJS.ProcessEnv) {
   const decimals = z.record(z.string(),z.number().int().min(0).max(18)).parse(JSON.parse(env.LIVE_TOKEN_DECIMALS ?? "{}"));
   const chain = config.chain;
   const adapter = chain === "solana"
-    ? solanaAdapter(config,await solanaKey(env),env.JUPITER_API_KEY ?? "")
-    : evmAdapter(config,await evmKey(config,env),env.ZEROX_API_KEY ?? "");
+    ? solanaAdapter(config,await solanaKey(env),await secretText(env,"JUPITER_API_KEY") ?? "")
+    : evmAdapter(config,await evmKey(config,env),await secretText(env,"ZEROX_API_KEY") ?? "");
   const normalize = (token:string) => chain in networks ? token.toLowerCase() : token;
   return {config,adapter,stable:normalize(stable),stableDecimals,usdPerUnit,
     decimals:new Map(Object.entries(decimals).map(([token,n])=>[normalize(token),n]))};

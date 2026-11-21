@@ -1,8 +1,9 @@
 import { serve } from "@hono/node-server";
 import { log } from "../logging/operational.js";
 import { createDashboardApi } from "./routes.js";
+import { secretText } from "../config/secrets.js";
 
-const token = process.env.DASHBOARD_API_TOKEN ?? "";
+const token = await secretText(process.env,"DASHBOARD_API_TOKEN") ?? "";
 if (!token.trim()) log("error", "dashboard.start_failed", { reason: "missing_api_token" });
 const api = createDashboardApi({
   token,

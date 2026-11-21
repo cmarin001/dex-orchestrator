@@ -128,7 +128,7 @@ export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cac
               row.age_sec,
               fetch,
               options.goPlusAccessToken,
-              process.env.ETHERSCAN_API_KEY,
+              options.etherscanApiKey,
             );
             const checks_raw = toRugChecks(risk.checks_raw);
             const sources = Object.entries(risk.provenance).filter(([, source]) => source.ok);
@@ -171,7 +171,7 @@ export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cac
           gaps,
           detail: { reasons },
         });
-        const actions = socialActions([identity.token], 60);
+        const actions = socialActions([identity.token], 60, fetch, options.social);
         if (actions.length && !signal.aborted && !gaps.length && (!pipeline.mode || pipeline.mode.usesModels())) {
           try {
             const social = await reconC(

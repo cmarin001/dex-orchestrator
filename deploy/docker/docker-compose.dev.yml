@@ -1,0 +1,19 @@
+services:
+  worker:
+    restart: "no"
+    environment:
+      EXECUTION_MODE: paper
+      OPERATING_MODE: strategies
+      MODEL_PROVIDERS: ""
+    volumes:
+      - "${DEX_DEV_DATA_DIR:?Set a separate development data directory}:/app/data"
+  dashboard:
+    restart: "no"
+    volumes:
+      - "${DEX_DEV_DATA_DIR:?Set a separate development data directory}:/app/data:ro"
+      - "${DEX_DEV_DATA_DIR:?Set a separate development data directory}/controls:/app/data/controls"
+  mcp:
+    restart: "no"
+    volumes:
+      - "${DEX_DEV_DATA_DIR:?Set a separate development data directory}:/app/data:ro"
+      - "${DEX_DEV_DATA_DIR:?Set a separate development data directory}/controls:/app/data/controls"
