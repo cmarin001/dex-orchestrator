@@ -26,6 +26,7 @@ export function createMcp(control: ControlService, actor: string) {
   tool("get_candidates","Read the last scan and watched targets.",empty,true,control.candidates);
   tool("get_risk","Read the current risk configuration.",empty,true,control.risk);
   const controls = [
+    ["set_live_execution","live-execution","Queue a switch for new live orders on a configured live worker. Disabling also blocks exits. Submitted orders continue reconciliation."],
     ["pause_entries","pause","Queue a pause of new paper entries. Exits continue."],
     ["resume_entries","resume","Queue resumed paper entries subject to the usual risk and rug checks."],
     ["update_risk","risk","Queue a validated, attributed revision that affects future paper entries."],

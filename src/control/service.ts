@@ -10,14 +10,14 @@ import { readJournal } from "../logging/logger.js";
 import type { JournalEvent } from "../logging/types.js";
 import type { Position } from "../state/positions.js";
 import { readRisk } from "../state/risk-config.js";
-import { commandSchema, ControlConflict, exitInput, Inbox, rejectInput, riskInput, toggle } from "./commands.js";
+import { commandSchema, ControlConflict, exitInput, Inbox, rejectInput, riskInput, toggle, liveExecutionInput } from "./commands.js";
 
 export const auditQuery = z.strictObject({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   since: z.iso.datetime({ offset: true }).optional(),
   cursor: z.coerce.number().int().nonnegative().optional(),
 });
-export const controlInputs = { pause: toggle, resume: toggle, risk: riskInput, exit: exitInput, reject: rejectInput };
+export const controlInputs = { "live-execution": liveExecutionInput, pause: toggle, resume: toggle, risk: riskInput, exit: exitInput, reject: rejectInput };
 type Control = keyof typeof controlInputs;
 
 function openPositions(events: JournalEvent[]) {
@@ -42,6 +42,11 @@ function publications(events: JournalEvent[]) {
   }).slice(-50).reverse();
 }
 
+function executionMode(journal: JournalEvent[]) {
+  const event = journal.findLast(row => row.stage === "execution_mode");
+  return z.object({mode:z.enum(["paper","live"])}).safeParse(event?.detail).data?.mode ?? "paper";
+}
+
 export function createControl(options: { auditPath: string; riskPath: string; inboxPath?: string;
   events?: () => Promise<JournalEvent[]> }) {
   const events = options.events ?? (() => readJournal(options.auditPath, true));
@@ -50,8 +55,8 @@ export function createControl(options: { auditPath: string; riskPath: string; in
   return {
     async health() {
       if (!options.events) await access(options.auditPath);
-      await events();
-      return { status: "ok", mode: "paper", journal_readable: true };
+      const journal = await events();
+      return { status: "ok", mode: executionMode(journal), journal_readable: true };
     },
     async status() {
       const journal = await events();
@@ -59,12 +64,18 @@ export function createControl(options: { auditPath: string; riskPath: string; in
       const cycle = journal.findLast(e => e.stage === "worker_cycle");
       const marker = journal.findLast(e => e.stage === "control" && e.status === "ok" &&
         ["pause", "resume"].includes(commandSchema.parse(e.detail).action.type));
+      const mode = executionMode(journal);
+      const liveCommand = journal.findLast(e => e.stage === "control" && e.status === "ok" &&
+        commandSchema.parse(e.detail).action.type === "live-execution");
+      const liveAction = liveCommand ? commandSchema.parse(liveCommand.detail).action : undefined;
       const equity = publications(journal)[0];
       const breaker = (worker && cycle && worker.at > cycle.at ? undefined : cycle?.detail) as { breaker_until?: number } | undefined;
       return { loop_state: worker?.detail ?? "unknown", last_cycle_at: cycle?.at ?? null,
         breaker_open: (breaker?.breaker_until ?? 0) > Date.now(),
         breaker_until: breaker?.breaker_until ?? null,
         entries_paused: !!marker && commandSchema.parse(marker.detail).action.type === "pause",
+        execution_mode: mode,
+        live_execution_enabled: mode === "live" && liveAction?.type === "live-execution" && liveAction.enabled,
         open_positions: openPositions(journal).length, current_equity: equity?.equity_usd ?? null,
         drawdown_pct: equity?.drawdown_pct ?? null };
     },
@@ -101,6 +112,7 @@ export function createControl(options: { auditPath: string; riskPath: string; in
       const { request_id = randomUUID(), ...body } = controlInputs[type].parse(raw);
       const command = await inbox.submit(request_id, actor, JSON.stringify({type, body}), async () => {
         switch (type) {
+          case "live-execution": return {type, enabled:liveExecutionInput.parse(raw).enabled};
           case "pause": return {type};
           case "resume": return {type};
           case "risk": return {type, config:riskInput.parse(raw).config};

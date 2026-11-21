@@ -3,6 +3,7 @@ import { once } from "node:events";
 import { test } from "node:test";
 import { serve } from "@hono/node-server";
 import { createDashboardApi } from "../../src/dashboard-api/routes.js";
+import { readJournal } from "../../src/logging/logger.js";
 import { config, controlFixture, identity, target } from "../control-fixture.js";
 
 test("authenticated dashboard HTTP reads and commands share the worker journal", async t => {
@@ -45,4 +46,42 @@ test("authenticated dashboard HTTP reads and commands share the worker journal",
   assert.equal((await send("/controls/resume",{})).status,202);
   await f.drain();
   assert.equal((await (await send("/status")).json()).entries_paused,false);
+});
+
+test("live switch is authenticated, off by default and durable after worker application", async t => {
+  const f = await controlFixture(t,true);
+  const app = createDashboardApi({...f.paths,token:"test",initialCents:100000});
+  const path = "/api/v1/controls/live-execution";
+  const headers = {Authorization:"Bearer test","Content-Type":"application/json"};
+  const status = async () => (await app.request("/api/v1/status",{headers})).json() as Promise<{
+    execution_mode:string; live_execution_enabled:boolean;
+  }>;
+  const set = (enabled: unknown, request_id:string) => app.request(path,{method:"POST",headers,
+    body:JSON.stringify({enabled,request_id})});
+  assert.equal((await app.request(path,{method:"POST",body:'{"enabled":true}'})).status,401);
+  assert.equal((await set("true","invalid")).status,400);
+  assert.equal((await status()).execution_mode,"live");
+  assert.equal((await status()).live_execution_enabled,false);
+  assert.equal((await set(true,"on")).status,202);
+  assert.equal(f.worker.liveExecutionEnabled,false);
+  await f.drain();
+  assert.equal((await set(true,"on")).status,200);
+  assert.equal((await status()).live_execution_enabled,true);
+  assert.equal((await set(false,"on")).status,409);
+  assert.equal((await set(false,"off")).status,202);
+  await f.drain();
+  assert.equal((await status()).live_execution_enabled,false);
+  const restarted = f.makeWorker();
+  for (const event of await readJournal(f.paths.auditPath)) restarted.replay(event);
+  assert.equal(restarted.liveExecutionEnabled,false);
+});
+
+test("paper worker rejects attempts to enable live execution", async t => {
+  const f = await controlFixture(t);
+  await f.control.submit("live-execution",{request_id:"on",enabled:true},"operator");
+  await f.drain();
+  const receipt = await f.control.submit("live-execution",{request_id:"on",enabled:true},"operator");
+  assert.equal(receipt.state,"rejected");
+  assert.deepEqual(receipt.gaps,["live_execution_not_configured"]);
+  assert.equal(f.worker.liveExecutionEnabled,false);
 });

@@ -42,7 +42,7 @@ type WalletEvent = z.infer<typeof journalSchema>;
 type Reservation = { hash:string; intent:TransactionIntent; reserved_at:number; attempts:Identifier[]; receipt?:TxReceipt };
 
 export function createSigner(adapter: ChainAdapter, caps: WalletConfig, audit: Audit, journal: JournalEvent[],
-  poll: typeof confirm = confirm): Signer {
+  poll: typeof confirm = confirm, enabled: () => boolean = () => true): Signer {
   if (adapter.chain !== caps.chain) throw new Error("WALLET_CHAIN_MISMATCH");
   const reservations = new Map<string,Reservation>();
   function apply(row: WalletEvent) {
@@ -109,6 +109,10 @@ export function createSigner(adapter: ChainAdapter, caps: WalletConfig, audit: A
       return known ?? null;
     }
     const now = Date.now();
+    if (!enabled()) {
+      if (known) return known;
+      throw new Error("LIVE_EXECUTION_DISABLED");
+    }
     const replacement = known?.status === "pending" && latest;
     if (replacement && (!adapter.replace || attempts.length >= 2 || now >= intent.deadline_sec * 1000)) return known!;
     if (BigInt(intent.max_fee_native) > BigInt(caps.max_fee_native)) throw new Error("FEE_LIMIT_EXCEEDED");
@@ -126,6 +130,7 @@ export function createSigner(adapter: ChainAdapter, caps: WalletConfig, audit: A
       if (Date.now() >= intent.deadline_sec * 1000) throw new Error("INTENT_EXPIRED");
       const identifier = identifierSchema.parse({id:signed.id,expires_at_height:signed.expires_at_height});
       if (active.some(attempt => attempt.id === identifier.id)) throw new Error("DUPLICATE_REPLACEMENT");
+      if (!enabled()) throw new Error("LIVE_EXECUTION_DISABLED");
       await record({event:"signed",run_id,identifier});
       await broadcastSigned(signed, bytes => adapter.broadcast(bytes));
     }

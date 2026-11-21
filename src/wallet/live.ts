@@ -19,10 +19,10 @@ const orderSchema = z.strictObject({
 type Order = z.infer<typeof orderSchema>;
 const walletNotSent = new Set(["INTENT_EXPIRED","PER_TRADE_LIMIT_EXCEEDED","DAILY_LIMIT_EXCEEDED",
   "SIMULATION_FAILED","FEE_LIMIT_EXCEEDED","QUOTE_UNAVAILABLE","QUOTE_MISMATCH","ROUTE_MISMATCH",
-  "UNRECONCILED_TRANSACTION","UNAPPROVED_PROGRAM","SIMULATION_TOKEN_MISMATCH","RPC_CHAIN_MISMATCH"]);
+  "UNRECONCILED_TRANSACTION","LIVE_EXECUTION_DISABLED","UNAPPROVED_PROGRAM","SIMULATION_TOKEN_MISMATCH","RPC_CHAIN_MISMATCH"]);
 
 type Settings = {stable:string; stableDecimals:number; usdPerUnit:number; decimals:Map<string,number>};
-type Shared = {config:WalletConfig; signer:Signer; audit:Audit; journal:JournalEvent[]; positions:Positions; equity:Equity} & Settings;
+type Shared = {enabled: () => boolean; config:WalletConfig; signer:Signer; audit:Audit; journal:JournalEvent[]; positions:Positions; equity:Equity} & Settings;
 
 export function createLiveExecution(settings: Shared) {
   const {config,signer,audit,positions,equity,stable,stableDecimals,usdPerUnit,decimals} = settings;
@@ -85,7 +85,7 @@ export function createLiveExecution(settings: Shared) {
     return true;
   }
   async function submit(order: Order) {
-    if (pending.size) return false;
+    if (!settings.enabled() || pending.size) return false;
     const validated = orderSchema.parse(order);
     await audit({identity:order.identity,stage:"live_intent",status:"ok",detail:validated,gaps:[]});
     pending.set(order.intent.run_id,validated);
@@ -110,6 +110,7 @@ export function createLiveExecution(settings: Shared) {
   }
   return {
     chain:config.chain,
+    enabled:settings.enabled,
     perTradeCents:config.per_trade_limit_cents,
     async reconcile() {
       return serialize(async()=>{ for (const order of pending.values()) await execute(order,true); });

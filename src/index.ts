@@ -77,15 +77,21 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
   if ((previousMode && JSON.stringify(previousMode.detail) !== JSON.stringify(execution)) ||
       (mode === "live" && !previousMode && journal.length)) throw new Error("EXECUTION_JOURNAL_MISMATCH");
   if (!previousMode) await audit({stage:"execution_mode",status:"ok",gaps:[],detail:execution});
-  const signer = wallet && createSigner(wallet.adapter,wallet.config,audit,journal);
+  const positions = new Positions();
+  const cache = new ReconCache();
+  const controls = new WorkerControls(new Inbox(env.CONTROL_INBOX_PATH ?? env.AUDIT_PATH + ".controls"), env.RISK_CONFIG_PATH, cache, audit, mode === "live");
+  for (const event of journal) controls.replay(event);
+  const enabled = () => controls.liveExecutionEnabled;
+  const signer = wallet && createSigner(wallet.adapter,wallet.config,audit,journal,undefined,enabled);
   if (wallet?.native && signer) {
     const native = wallet.native;
     const intent = transactionIntentSchema.parse({run_id:native.run_id,chain:"bitcoin",token_in:native.address,
       token_out:native.recipient,amount_in:native.satoshis,min_amount_out:native.satoshis,
       size_cents:native.size_cents,deadline_sec:native.deadline_sec,max_fee_native:wallet.config.max_fee_native,route:"native"});
-    const receipt = await signer.signAndSend(intent);
-    log("info","bitcoin.transfer_reconciled",{run_id:intent.run_id,outcome:receipt.status});
-    if (receipt.status !== "confirmed") process.exitCode = 1;
+    await controls.drain(positions);
+    const receipt = enabled() && !controls.paused ? await signer.signAndSend(intent) : await signer.reconcile(intent);
+    log("info","bitcoin.transfer_reconciled",{run_id:intent.run_id,outcome:receipt?.status ?? "not_submitted"});
+    if (receipt?.status !== "confirmed") process.exitCode = 1;
     return;
   }
   if (!env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY_REQUIRED");
@@ -97,11 +103,8 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
   if (!targets.length && !discovery) throw new Error("Configure a watchlist or enable discovery");
   const uniqueTargets = [...new Map(targets.map((target) => [targetKey(target), target])).values()];
   const equity = new Equity(env.INITIAL_EQUITY_CENTS);
-  const positions = new Positions();
-  const cache = new ReconCache();
-  const controls = new WorkerControls(new Inbox(env.CONTROL_INBOX_PATH ?? env.AUDIT_PATH + ".controls"), env.RISK_CONFIG_PATH, cache, audit);
+
   for (const event of journal) {
-    controls.replay(event);
     const { position, close, identity } = event;
     if (event.stage === "rug-check" && identity &&
         rugCheckSchema.safeParse(event.detail).data?.verdict === "FAIL") {
@@ -119,7 +122,7 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
     }
   }
   const live = wallet && wallet.stable && signer
-    ? createLiveExecution({...wallet, signer, audit, journal, positions, equity}) : undefined;
+    ? createLiveExecution({...wallet, signer, audit, journal, positions, equity, enabled}) : undefined;
   const abort = new AbortController();
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, () => { log("info", "worker.shutdown_requested", { reason: signal }); abort.abort(); });

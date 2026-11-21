@@ -60,6 +60,7 @@ export async function runCandidate(input: Merged, dependencies: Pipeline, ranked
     return skip(reason);
   }
   if (dependencies.live && identity.chain !== dependencies.live.chain) return skip("live_chain_disabled");
+  if (dependencies.live && !dependencies.live.enabled()) return skip("live_execution_disabled");
   const open = positions.get(identity);
   if (open) {
     if (!open.exit_policy) {

@@ -48,6 +48,7 @@ export async function watchPositions(positions: Positions, equity: Equity, audit
         log("info", "position.exit_target_changed", fields);
       }
       if (!isFresh(observed, 15_000) || signal.aborted || !canExit(policy, { price, at })) continue;
+      if (live && !live.enabled()) continue;
       const decision = await executor(call, identity, { action:"exit",sizer:{status:"SIZED",size_usd:cost_cents/100,max_slippage_bps:0},
         position:{entry_price:policy.entry_price,opened_at:Math.floor(policy.entry_at/1000),max_hold_sec:policy.max_hold_sec,
           stop_loss_bps:policy.mode==="stop_loss"?policy.stop_loss_bps:10000,take_profit_bps:active},

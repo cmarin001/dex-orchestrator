@@ -25,6 +25,12 @@ settlement-token P&L and the USD spend limit.
 
 Set `DAILY_LIMIT_USD`, `PER_TRADE_LIMIT_USD` and `LIVE_MAX_FEE_NATIVE`
 before setting `EXECUTION_MODE=live`. The fee cap uses wei for EVM,
+Once the live worker is running, send an authenticated POST to
+`/api/v1/controls/live-execution` with `{"enabled":true}` and wait for
+`live_execution_enabled` in status before expecting orders. Send
+`{"enabled":false}` to disarm. This also blocks new exits and replacements.
+The last applied value survives restart. BTC one-shot mode drains queued
+controls on invocation. An unarmed invocation only reconciles existing IDs.
 lamports for Solana and satoshis for Bitcoin. USD limits apply to entries and
 exits. An unresolved submission blocks subsequent transactions. A rejected
 simulation releases its unused reservation. Use a separate quote API key and

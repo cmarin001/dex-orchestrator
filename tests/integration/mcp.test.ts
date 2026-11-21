@@ -17,7 +17,7 @@ test("MCP tools and resource use the same reads and command receipts as REST", a
   await server.connect(local);
   await client.connect(remote);
   t.after(() => client.close());
-  assert.equal((await client.listTools()).tools.length,11);
+  assert.equal((await client.listTools()).tools.length,12);
   async function call(name:string,args:Record<string,unknown> = {}) {
     const result = await client.callTool({name,arguments:args});
     assert.ok(!result.isError,JSON.stringify(result));
@@ -43,8 +43,10 @@ test("MCP tools and resource use the same reads and command receipts as REST", a
   assert.equal((await call("get_status"))?.entries_paused,true);
   assert.deepEqual((await call("get_risk"))?.config,config);
   await call("resume_entries");
+  assert.equal((await call("set_live_execution",{request_id:"try-live",enabled:true}))?.state,"queued");
   await f.drain();
   assert.equal((await call("get_status"))?.entries_paused,false);
+  assert.equal((await call("set_live_execution",{request_id:"try-live",enabled:true}))?.state,"rejected");
 });
 
 test("Streamable HTTP authenticates, checks Host and Origin, and serves SDK clients", async t => {
