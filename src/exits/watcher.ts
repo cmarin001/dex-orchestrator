@@ -10,10 +10,11 @@ import { failureKind, log, withLogContext } from "../logging/operational.js";
 import { CandidateError, SystemError } from "../orchestrator/errors.js";
 import type { Equity } from "../state/equity.js";
 import type { Positions } from "../state/positions.js";
+import type { LiveExecution } from "../wallet/live.js";
 import { dexScreener } from "../tools/dexscreener.js";
 import { activeTarget, canExit } from "./policy.js";
 
-export async function watchPositions(positions: Positions, equity: Equity, audit: Audit, signal: AbortSignal, call: CallAgent, refreshMs = 5000, requestedExits = new Set<string>()) {
+export async function watchPositions(positions: Positions, equity: Equity, audit: Audit, signal: AbortSignal, call: CallAgent, refreshMs = 5000, requestedExits = new Set<string>(), live?: LiveExecution, liveSlippage?: () => Promise<number>) {
   log("info", "watcher.started");
   const targets = new Map<string, number>();
   while (!signal.aborted) {
@@ -57,6 +58,14 @@ export async function watchPositions(positions: Positions, equity: Equity, audit
       if (!Number.isSafeInteger(proceeds)) throw new SystemError("Invalid simulated proceeds");
       const exit_reason = price < policy.entry_price ? "stop" : at - policy.entry_at >= policy.max_hold_sec * 1000
         ? "timeout" : "target";
+      if (live) {
+        if (await live.exit(position,price,await liveSlippage?.() ?? 0,exit_reason)) {
+          targets.delete(tradeKey(identity));
+          requestedExits.delete(tradeKey(identity));
+          await publishClose();
+        }
+        continue;
+      }
       await audit({ identity, stage: "executor", status: "paper_close", gaps: [], position,
         close: { exit_at: at, exit_price: price, exit_reason, proceeds_cents: proceeds } });
       positions.close(position);
@@ -64,11 +73,14 @@ export async function watchPositions(positions: Positions, equity: Equity, audit
       log("info", "position.closed", { ...fields, outcome: "paper_close", reason: exit_reason });
       targets.delete(tradeKey(identity));
       requestedExits.delete(tradeKey(identity));
-      const projection = await equityCurve(call,identity,{starting_equity_usd:equity.initialCents/100,closed_trades:equity.closedTrades(),
-        as_of:Math.floor(Date.now()/1000)});
-      await audit({identity,stage:"equity-curve",status:"ok",detail:projection,gaps:[]});
-      const trace = await logger(call,identity,[{agent:"executor",output:decision},{agent:"equity",output:projection}]);
-      await audit({identity,stage:"logger",status:"ok",detail:trace,gaps:trace.rows.flatMap(row=>row.gaps)});
+      await publishClose();
+      async function publishClose() {
+        const projection = await equityCurve(call,identity,{starting_equity_usd:equity.initialCents/100,closed_trades:equity.closedTrades(),
+          as_of:Math.floor(Date.now()/1000)});
+        await audit({identity,stage:"equity-curve",status:"ok",detail:projection,gaps:[]});
+        const trace = await logger(call,identity,[{agent:"executor",output:decision},{agent:"equity",output:projection}]);
+        await audit({identity,stage:"logger",status:"ok",detail:trace,gaps:trace.rows.flatMap(row=>row.gaps)});
+      }
     }
     await sleep(refreshMs, undefined, { signal }).catch(error => { if (!signal.aborted) throw error; });
   }

@@ -37,6 +37,7 @@ export async function runLoop(
     let delay = options.intervalMs;
     let breakerUntil: number | null = null;
     await controls?.drain(pipeline.positions);
+    await pipeline.live?.reconcile();
     const targets = cache.list();
     const run_id = randomUUID();
     const snapshots = new Map<string, ReturnType<ReconCache["read"]>>();

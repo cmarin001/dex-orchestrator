@@ -1,7 +1,9 @@
+import { isFill, isClose } from "./logging/types.js";
 import { chartPointSchema } from "../schemas/live-view.js";
 import { defaultRisk } from "../schemas/risk-config.js";
 import { normalizeAddress, targetSchema } from "../schemas/common.js";
-import { readFile } from "node:fs/promises";
+import { readFile, mkdir, open, unlink } from "node:fs/promises";
+import { dirname } from "node:path";
 import { z } from "zod";
 import { responsesAgent } from "./agents/call.js";
 import { targetKey } from "./cache/merge.js";
@@ -19,10 +21,14 @@ import { rugCheckSchema } from "../schemas/rug-check.js";
 import { scopeSchema } from "./tools/discovery.js";
 import { Inbox } from "./control/commands.js";
 import { WorkerControls } from "./control/worker.js";
+import { configuredWallet } from "./wallet/config.js";
+import { createSigner } from "./wallet/signer.js";
+import { createLiveExecution } from "./wallet/live.js";
+import { transactionIntentSchema } from "../schemas/transaction-intent.js";
 
 const integer = z.coerce.number().int().positive();
 const config = z.object({
-  OPENAI_API_KEY: z.string().min(1),
+  OPENAI_API_KEY: z.string().optional(),
   OPENAI_MODEL: z.string().min(1).default("gpt-4.1-mini"),
   WATCHLIST: z.string().default("[]"),
   LOOP_INTERVAL_MS: integer.max(2_147_483_647).default(90_000),
@@ -46,6 +52,43 @@ const config = z.object({
 async function main(): Promise<void> {
   log("info", "worker.starting");
   const env = config.parse(process.env);
+  const mode = z.enum(["paper","live"]).default("paper").parse(process.env.EXECUTION_MODE);
+  if (mode === "live" && env.AUDIT_PATH === "data/audit.jsonl") throw new Error("LIVE_AUDIT_PATH_REQUIRED");
+  if (mode === "paper") return run(env, mode);
+  await mkdir(dirname(env.AUDIT_PATH), { recursive:true,mode:0o700 });
+  const path = env.AUDIT_PATH + ".worker.lock";
+  const lease = await open(path,"wx",0o600).catch(() => { throw new Error("LIVE_WORKER_LOCKED"); });
+  try {
+    await lease.writeFile(String(process.pid));
+    await run(env,mode);
+  } finally {
+    await lease.close();
+    await unlink(path);
+  }
+}
+
+async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void> {
+  const wallet = mode === "live" ? await configuredWallet(process.env) : undefined;
+  const journal = await readJournal(env.AUDIT_PATH);
+  const audit = fileAudit(env.AUDIT_PATH);
+  const address = await wallet?.adapter.address();
+  const previousMode = journal.find(event => event.stage === "execution_mode");
+  const execution = {mode,chain:wallet?.config.chain ?? null,address:address ?? null};
+  if ((previousMode && JSON.stringify(previousMode.detail) !== JSON.stringify(execution)) ||
+      (mode === "live" && !previousMode && journal.length)) throw new Error("EXECUTION_JOURNAL_MISMATCH");
+  if (!previousMode) await audit({stage:"execution_mode",status:"ok",gaps:[],detail:execution});
+  const signer = wallet && createSigner(wallet.adapter,wallet.config,audit,journal);
+  if (wallet?.native && signer) {
+    const native = wallet.native;
+    const intent = transactionIntentSchema.parse({run_id:native.run_id,chain:"bitcoin",token_in:native.address,
+      token_out:native.recipient,amount_in:native.satoshis,min_amount_out:native.satoshis,
+      size_cents:native.size_cents,deadline_sec:native.deadline_sec,max_fee_native:wallet.config.max_fee_native,route:"native"});
+    const receipt = await signer.signAndSend(intent);
+    log("info","bitcoin.transfer_reconciled",{run_id:intent.run_id,outcome:receipt.status});
+    if (receipt.status !== "confirmed") process.exitCode = 1;
+    return;
+  }
+  if (!env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY_REQUIRED");
   const discovery = env.ENABLE_DISCOVERY === "true" ? scopeSchema.parse(
     JSON.parse(await readFile(new URL("../config/default.json", import.meta.url), "utf8")).discovery_scope,
   ) : undefined;
@@ -56,18 +99,17 @@ async function main(): Promise<void> {
   const equity = new Equity(env.INITIAL_EQUITY_CENTS);
   const positions = new Positions();
   const cache = new ReconCache();
-  const audit = fileAudit(env.AUDIT_PATH);
   const controls = new WorkerControls(new Inbox(env.CONTROL_INBOX_PATH ?? env.AUDIT_PATH + ".controls"), env.RISK_CONFIG_PATH, cache, audit);
-  for (const event of await readJournal(env.AUDIT_PATH)) {
+  for (const event of journal) {
     controls.replay(event);
     const { position, close, identity } = event;
     if (event.stage === "rug-check" && identity &&
         rugCheckSchema.safeParse(event.detail).data?.verdict === "FAIL") {
       cache.reject(identity);
-    } else if (event.status === "paper_fill" && position) {
+    } else if (isFill(event.status) && position) {
       positions.record(position);
       equity.mark(position, position.entry_price_usd, Date.parse(event.at));
-    } else if (event.status === "paper_close" && position && close) {
+    } else if (isClose(event.status) && position && close) {
       positions.close(position);
       equity.close(position, close.proceeds_cents, close.exit_at);
     } else if (event.stage === "position_mark" && identity) {
@@ -76,6 +118,8 @@ async function main(): Promise<void> {
       if (open && open.run_id === identity.run_id && point.success) equity.mark(open, point.data.price, point.data.t);
     }
   }
+  const live = wallet && wallet.stable && signer
+    ? createLiveExecution({...wallet, signer, audit, journal, positions, equity}) : undefined;
   const abort = new AbortController();
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, () => { log("info", "worker.shutdown_requested", { reason: signal }); abort.abort(); });
@@ -88,7 +132,7 @@ async function main(): Promise<void> {
     goPlusAccessToken: env.GOPLUS_ACCESS_TOKEN,
   };
   const pipeline = {
-    call: responsesAgent(env.OPENAI_API_KEY, env.OPENAI_MODEL, abort.signal), audit,
+    call: responsesAgent(env.OPENAI_API_KEY, env.OPENAI_MODEL, abort.signal), audit, live,
     exitMode: env.PAPER_EXIT_MODE,
     equityMaxAgeMs: env.MAX_EQUITY_AGE_SEC * 1000,
     riskConfig: async () => {
@@ -98,7 +142,7 @@ async function main(): Promise<void> {
     },
     equity, positions, maxPositionBps: env.MAX_POSITION_BPS, maxOpenPositions: env.MAX_OPEN_POSITIONS,
   };
-  const watcher = watchPositions(positions, equity, audit, abort.signal, pipeline.call, env.MARK_REFRESH_MS, controls.exits).finally(() => abort.abort());
+  const watcher = watchPositions(positions, equity, audit, abort.signal, pipeline.call, env.MARK_REFRESH_MS, controls.exits, live, async () => (await pipeline.riskConfig()).max_slippage_bps).finally(() => abort.abort());
   const refresh = refreshRecon(options, pipeline, cache, abort.signal).finally(() => abort.abort());
   const loop = runLoop(options, pipeline, abort.signal, cache, controls).finally(() => abort.abort());
   const results = await Promise.allSettled([loop, refresh, watcher]);

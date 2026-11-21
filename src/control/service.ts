@@ -1,3 +1,4 @@
+import { isFill, isClose } from "../logging/types.js";
 import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { z } from "zod";
@@ -22,9 +23,9 @@ type Control = keyof typeof controlInputs;
 function openPositions(events: JournalEvent[]) {
   const positions = new Map<string, { position: Position; opened: number; mark: z.infer<typeof chartPointSchema> | null }>();
   for (const e of events) {
-    if (e.position && e.status === "paper_fill") positions.set(tradeKey(e.position),
+    if (e.position && isFill(e.status)) positions.set(tradeKey(e.position),
       { position: e.position, opened: Date.parse(e.at), mark: null });
-    if (e.position && e.status === "paper_close") positions.delete(tradeKey(e.position));
+    if (e.position && isClose(e.status)) positions.delete(tradeKey(e.position));
     if (e.stage === "position_mark" && e.identity && e.status === "ok") {
       const p = positions.get(tradeKey(e.identity));
       const mark = chartPointSchema.safeParse(e.detail);

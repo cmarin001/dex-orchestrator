@@ -75,3 +75,9 @@ desk.example.com {
 
 Check the authenticated `/api/v1/health` endpoint before connecting clients.
 Set `DASHBOARD_ORIGIN` to the exact browser frontend origin for direct CORS.
+
+## Live worker
+
+Use a worker-only secret file and a dedicated live audit journal. See
+[worker isolation and the live release checks](../docs/live-runbook.md)
+before enabling the live worker on a droplet or in a container.

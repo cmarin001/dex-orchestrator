@@ -12,12 +12,17 @@
     "start": "node --env-file-if-exists=.env --import tsx src/index.ts",
     "dashboard:api": "node --env-file-if-exists=.env --import tsx src/dashboard-api/server.ts",
     "simulate": "node --import tsx --test tests/integration/simulation.test.ts",
-    "mcp": "node --env-file-if-exists=.env --import tsx src/mcp/server.ts"
+    "mcp": "node --env-file-if-exists=.env --import tsx src/mcp/server.ts",
+    "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-kms": "3.1175.0",
     "@hono/node-server": "2.1.9",
     "@modelcontextprotocol/sdk": "1.32.2",
+    "@noble/curves": "2.4.0",
+    "@scure/btc-signer": "2.4.1",
     "@solana/web3.js": "1.98.4",
+    "bs58": "6.0.0",
     "hono": "4.13.19",
     "viem": "2.38.5",
     "zod": "4.1.12"

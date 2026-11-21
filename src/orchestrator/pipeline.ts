@@ -15,6 +15,7 @@ import type { Audit } from "../logging/logger.js";
 import { sizePosition } from "../state/equity.js";
 import type { Equity } from "../state/equity.js";
 import type { Positions } from "../state/positions.js";
+import type { LiveExecution } from "../wallet/live.js";
 import { failureKind, log } from "../logging/operational.js";
 import { CandidateError } from "./errors.js";
 
@@ -34,9 +35,10 @@ export interface Pipeline {
   riskConfig?: () => Promise<RiskConfig>;
   rejectRecon?: (target: Merged["identity"]) => void;
   exitMode?: "profit_only" | "stop_loss";
+  live?: LiveExecution;
 }
 
-export async function runCandidate(input: Merged, dependencies: Pipeline, ranked?: ScannerRow): Promise<"paper_fill" | "skipped"> {
+export async function runCandidate(input: Merged, dependencies: Pipeline, ranked?: ScannerRow): Promise<"paper_fill" | "live_fill" | "skipped"> {
   const { identity, feed_entry, quote, expires_at } = input;
   const { audit, call, equity, positions, maxPositionBps, maxOpenPositions, signal, now = Date.now } = dependencies;
   const fresh = () => expires_at !== null && now() <= expires_at;
@@ -57,6 +59,7 @@ export async function runCandidate(input: Merged, dependencies: Pipeline, ranked
       detail: [{ ...identity, skipped: true, reason }] });
     return skip(reason);
   }
+  if (dependencies.live && identity.chain !== dependencies.live.chain) return skip("live_chain_disabled");
   const open = positions.get(identity);
   if (open) {
     if (!open.exit_policy) {
@@ -118,7 +121,7 @@ export async function runCandidate(input: Merged, dependencies: Pipeline, ranked
   const capacity = equity.entryCapacityCents(positions.committedCents, config.halt_new_entries_dd);
   if (!capacity) return skip("portfolio_loss_budget_exhausted");
   const budget = riskBudget(config, equity.drawdown_pct, currentEquity, scan.liquidity_usd);
-  const costCents = sizePosition(Math.floor(Math.min(proposal.size_usd, availableCents / 100) * 100), currentEquity, Math.min(capacity, budget), maxPositionBps);
+  const costCents = sizePosition(Math.floor(Math.min(proposal.size_usd, availableCents / 100) * 100), currentEquity, Math.min(capacity, budget, dependencies.live?.perTradeCents ?? Infinity), maxPositionBps);
   await record("sizer", { proposal, approved_cents: costCents, portfolio_capacity_cents: capacity });
   if (costCents === 0) return skip("zero_size");
 
@@ -150,10 +153,18 @@ export async function runCandidate(input: Merged, dependencies: Pipeline, ranked
 
   const position = { ...identity, cost_cents: costCents, entry_price_usd: quote.value,
     ...(dependencies.exitMode ? { exit_policy: { ...exit_policy, entry_at: now() } } : {}) };
-  await audit({ identity, stage: "executor", status: "paper_fill", gaps: [], position });
-  positions.record(position);
-  log("info", "position.opened", { ...fields, outcome: "paper_fill" });
-  equity.mark(position, quote.value, quote.fetched_at);
+  let outcome: "live_fill" | "paper_fill" | "skipped";
+  if (dependencies.live) {
+    const confirmed = await dependencies.live.enter(identity,costCents,quote.value,
+      Math.min(latest.max_slippage_bps,config.max_slippage_bps),exit_policy,expires_at!);
+    outcome = confirmed ? "live_fill" : await skip("live_entry_unconfirmed");
+  } else {
+    await audit({ identity, stage: "executor", status: "paper_fill", gaps: [], position });
+    positions.record(position);
+    log("info", "position.opened", { ...fields, outcome: "paper_fill" });
+    equity.mark(position, quote.value, quote.fetched_at);
+    outcome = "paper_fill";
+  }
 
   const hops: LogHop[] = [
     { agent: "scanner", output: scan }, { agent: "rug", output: risk },
@@ -183,5 +194,5 @@ export async function runCandidate(input: Merged, dependencies: Pipeline, ranked
     log("warn", "pipeline.observer_failed", { ...fields, stage: "equity-curve", failure_kind: failureKind(error) });
     await audit({ identity, stage: "equity-curve", status: "failed", gaps: ["equity-curve_unavailable"] });
   }
-  return "paper_fill";
+  return outcome;
 }

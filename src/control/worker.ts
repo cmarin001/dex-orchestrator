@@ -1,3 +1,4 @@
+import { isClose } from "../logging/types.js";
 import { tradeKey } from "../../schemas/common.js";
 import type { ReconCache } from "../cache/recon-cache.js";
 import type { Audit } from "../logging/logger.js";
@@ -18,7 +19,7 @@ export class WorkerControls {
     if (action.type === "exit") this.exits.add(tradeKey(action.position));
   }
   replay(event: JournalEvent) {
-    if (event.status === "paper_close" && event.position) this.exits.delete(tradeKey(event.position));
+    if (isClose(event.status) && event.position) this.exits.delete(tradeKey(event.position));
     if (event.stage !== "control") return;
     const command = commandSchema.parse(event.detail);
     this.completed.add(command.id);

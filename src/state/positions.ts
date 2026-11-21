@@ -1,5 +1,6 @@
 import { exitPolicySchema } from "../../schemas/exit-policy.js";
 import { z } from "zod";
+import { positiveUnits } from "../../schemas/transaction-intent.js";
 import { handoff, money } from "../../schemas/common.js";
 import type { Target } from "../../schemas/common.js";
 import { targetKey } from "../cache/merge.js";
@@ -8,6 +9,7 @@ export const positionSchema = z.strictObject({
   ...handoff,
   cost_cents: money.positive(),
   entry_price_usd: z.number().positive(),
+  live_amount: positiveUnits.optional(),
   exit_policy: exitPolicySchema.optional(),
 });
 export type Position = z.infer<typeof positionSchema>;
