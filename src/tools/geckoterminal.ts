@@ -5,7 +5,7 @@ import { CandidateError } from "../orchestrator/errors.js";
 import { getJson } from "./dexscreener.js";
 import type { Fetch } from "./dexscreener.js";
 
-const networks = { ethereum: "eth", bsc: "bsc", base: "base", solana: "solana" };
+const networks = { ethereum: "eth", polygon: "polygon_pos", arbitrum: "arbitrum", bsc: "bsc", base: "base", solana: "solana" };
 const response = z.object({
   data: z.object({
     attributes: z.object({ address: z.string(), reserve_in_usd: z.string() }),

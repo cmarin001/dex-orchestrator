@@ -6,38 +6,59 @@ TypeScript ESM scaffold for a nine-prompt DEX pipeline. The standard entry point
 
 ```bash
 nvm use
-npm install
+npm ci
 npm run build
 npm test
+npm run simulate
 cp .env.example .env
 ```
 
-Set `OPENAI_API_KEY` and a nonempty `WATCHLIST` in `.env`. Each watchlist element supplies `chain`, the base `token` address, and the liquidity-pool `pair` address. Supported chain identifiers are `ethereum`, `bsc`, `base`, and `solana`. Run `npm start` to start the control loop. Use Ctrl+C to stop. Use one process per audit journal. The startup path replays simulated fills from the journal, restoring committed position costs. Market marks refresh after restart.
+Set `OPENAI_API_KEY` and a nonempty `WATCHLIST` in `.env`. Each watchlist element supplies `chain`, the base `token` address, and the liquidity-pool `pair` address. Supported chain identifiers are `ethereum`, `bsc`, `base`, `solana`, `polygon`, and `arbitrum`. Run `npm start` to start the control loop. Use Ctrl+C to stop. Use one process per audit journal. The startup path replays simulated fills from the journal, restoring committed position costs. Market marks refresh after restart.
 
 Amounts and position limits use integer USD cents and basis points. Paper fills use an observed USD price and omit fees, slippage, routing, and settlement. The fixtures contain recorded public provider responses. Tests use those recordings, synthetic candidates, and mocked OpenAI calls. Live OpenAI access requires a model that supports Responses function calling and Structured Outputs.
 
-[Architecture](docs/architecture.md) · [Schemas](docs/schemas.md) · [Runtime ADR](docs/adr/0001-runtime.md)
+[Prompt conformance and verification](docs/conformance.md) · [Architecture](docs/architecture.md) · [Schemas](docs/schemas.md) · [Runtime ADR](docs/adr/0001-runtime.md)
 
-## Vercel
+## VPS deployment and MCP
 
-The Vercel entry point serves a status response at `GET /` and runs one
-isolated paper-trading candidate at `POST /api/paper`. Every invocation starts
-with a fresh simulated portfolio and returns its audit events in JSON. The
-continuous worker and persistent journal are available through `npm start`.
-Send a precomputed snapshot as `{ "recon_snapshot": { ... } }` in the
-authenticated POST. An empty request returns a `stale_recon` skip. The
-Vercel function has no shared state with the worker. See the
-[Recon snapshot contract](docs/schemas.md#recon-snapshots).
+Run the worker, dashboard REST API, and optional remote MCP server as separate
+systemd services on Ubuntu 24.04. The worker runs discovery, Recon, and paper
+execution. The other processes read the journal and queue operator requests.
+See the [droplet setup and service units](deploy/README.md).
 
-Set these project environment variables to enable paper runs:
+For local access, run the dashboard with `npm run dashboard:api` or launch
+MCP over stdio from the checkout with:
 
-- `OPENAI_API_KEY` for Responses API access.
-- `PAPER_RUN_SECRET` for the bearer token protecting the POST endpoint.
-- `PAPER_RUN_TARGET` to a single JSON object with `chain`, `token`, and `pair`.
+```bash
+node --env-file=.env --import tsx src/mcp/server.ts
+```
 
-`OPENAI_MODEL` is optional. Keep keys in Vercel environment variables.
-The background worker optionally accepts `GOPLUS_ACCESS_TOKEN`. The deployment includes no
-scheduled runs.
+Add this to Claude Desktop's MCP configuration or Cursor's `.cursor/mcp.json`.
+Replace both absolute paths with paths on the machine running the client.
+
+```json
+{
+  "mcpServers": {
+    "dex-orchestrator": {
+      "command": "/usr/local/bin/node",
+      "args": [
+        "--env-file=/opt/dex-orchestrator/.env",
+        "--import", "/opt/dex-orchestrator/node_modules/tsx/dist/loader.mjs",
+        "/opt/dex-orchestrator/src/mcp/server.ts"
+      ],
+      "env": {
+        "AUDIT_PATH": "/opt/dex-orchestrator/data/audit.jsonl",
+        "RISK_CONFIG_PATH": "/opt/dex-orchestrator/data/risk-config.jsonl",
+        "CONTROL_INBOX_PATH": "/opt/dex-orchestrator/data/controls"
+      }
+    }
+  }
+}
+```
+
+The local client needs filesystem access to the same journal and inbox as the
+worker. Remote clients use Streamable HTTP at `https://your-host/mcp` with
+the dashboard bearer token. [REST and MCP reference](docs/dashboard-api.md)
 
 ## TradeKeel paper dashboard
 
@@ -48,7 +69,7 @@ discovery, automated paper exits, live charts, and audit-derived trade history.
 
 ## Backend logging
 
-The worker, Hono server, and Vercel routes emit one JSON record per operational
+The worker, Hono server, and MCP server emit one JSON record per operational
 event. Set `LOG_LEVEL=debug` for provider requests, tool calls, cache hits, audit
 I/O, individual stages, and SSE lifecycle. The default `info` level includes
 startup and shutdown, agent timings, candidate outcomes, paper fills and exits,
@@ -63,4 +84,4 @@ record measures its lifetime.
 Operational records omit credentials, URLs and query values, prompts,
 model output, provider payloads, transaction bytes, and raw exception
 messages. The append-only audit journal remains the source for decision
-details and dashboard projections. Its format and persistence are unchanged.
+details and dashboard projections.

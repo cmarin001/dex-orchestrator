@@ -5,9 +5,8 @@ import { CandidateError } from "../orchestrator/errors.js";
 
 export const NEW_TTL_MS = 300_000;
 export const WATCHED_TTL_MS = 60_000;
-export const REJECTION_TTL_MS = 86_400_000;
 export const targetKey = ({ chain, token, pair }: Target): string => `${chain}:${normalizeAddress(chain, token)}:${normalizeAddress(chain, pair)}`;
-export const reconKey = ({ chain, token }: Target): string => `${chain}:${normalizeAddress(chain, token)}`;
+export const reconKey = ({ chain, token }: Pick<Target,"chain"|"token">): string => `${chain}:${normalizeAddress(chain, token)}`;
 
 export function merge(identity: Handoff, snapshot: ReconSnapshot | undefined, ttlMs = NEW_TTL_MS, now = Date.now()) {
   const current = snapshot && targetKey(snapshot.target) === targetKey(identity) ? snapshot : undefined;
@@ -35,7 +34,7 @@ export function merge(identity: Handoff, snapshot: ReconSnapshot | undefined, tt
   const stale = !marketFresh || !securityFresh;
   const gap = stale ? current?.market_failed_at !== undefined && fresh(current.market_failed_at) && !market ? "recon_a_missing" : "stale_recon" : null;
   return {
-    identity, stale, gap,
+    identity, stale, gap, expected_slippage_bps: current?.expected_slippage_bps ?? 0,
     feed_entry: marketFresh ? {
       token: identity.token, pair: identity.pair, chain: identity.chain, trigger: market.trigger,
       liquidity_usd: market.liquidity_usd.value, vol_1h_usd: market.vol_1h_usd.value,

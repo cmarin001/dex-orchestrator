@@ -19,7 +19,7 @@ test("six agent wrappers accept the specialized prompt contracts through the Res
   ];
   const raw = { renounced: true, mint_auth_disabled: false, freeze_auth_disabled: true, lp_locked_or_burned: true, honeypot_sim_ok: true };
   const rug = { ...identity, verdict: "FAIL", checks: { renounced: true, mint_auth: false, freeze_auth: true,
-    lp_locked_or_burned: true, honeypot: true, tax_ok: true, blacklist: false,
+    lp_locked_or_burned: true, honeypot: true, tax_ok: true, blacklist: true,
     deployer_ok: true, age_ok: true, holder_conc_ok: true }, reason: "mint_auth_disabled" } as const;
   const sizing = { ...identity, status: "SIZED", size_usd: 15, size_tokens: 7.5, max_slippage_bps: 150,
     equity_at_decision: 1000, equity_age_sec: 10, risk_pct_used: .02,
@@ -42,34 +42,34 @@ test("six agent wrappers accept the specialized prompt contracts through the Res
   });
   const call = responsesAgent("fixture", "fixture");
   const scan = await scanner(call, identity, {
-    run_id: identity.run_id, seen: ["seen"], now,
+    run_id: identity.run_id, seen: ["seen"],
     feed: rows.map(({ chain, token, pair, trigger, liquidity_usd, vol_1h_usd, age_sec }) =>
       ({ chain, token, pair, trigger, liquidity_usd, vol_1h_usd, age_sec })),
     config: { min_liquidity_usd: 10_000, min_age_sec: 600, min_vol_1h_usd: 5000, top_n: 20, dedup_window_sec: 3600 },
   });
   assert.equal(scan.filter(row => row.skipped).length, 2);
-  assert.deepEqual(await rugCheck(call, identity, { age_sec: candidate.age_sec, checks_raw: raw, provenance: {}, sources_disagree: false }), rug);
+  assert.deepEqual(await rugCheck(call, identity, { ...candidate, checks_raw: raw }), rug);
   assert.throws(() => requireRugCheckPass("clear", { ...rug, verdict: "PASS" }, raw, 900), /risk_not_clear/);
-  assert.equal((await sizer(call, identity, { rug: { verdict: "PASS" }, now,
+  assert.equal((await sizer(call, identity, { rug: { verdict: "PASS" },
     equity: { equity_usd: 1000, drawdown_pct: .05, as_of: now - 10 },
     market: { liquidity_usd: 50_000, volatility_pct: 25, gas_usd: 1, reference_price: 2 },
     config: { max_risk_pct_per_trade: .02, max_position_vs_pool_depth: .015, max_slippage_bps: 150,
       halt_new_entries_dd: .15, max_equity_age_sec: 60 },
-  })).size_usd, 15);
-  assert.equal((await executor(call, identity, { sizer: sizing, action: "entry", position: null,
+  }, () => now * 1000)).size_usd, 15);
+  assert.equal((await executor(call, identity, { sizer: { status: sizing.status, size_usd: sizing.size_usd, max_slippage_bps: sizing.max_slippage_bps }, action: "entry", position: null,
     market: { quote_price: 2, expected_slippage_bps: 200, gas_usd: 1, now },
   })).status, "ABORTED");
-  assert.deepEqual(await logger(call, identity, hops), trace);
+  assert.deepEqual(await logger(call, identity, hops, () => now * 1000), trace);
   assert.deepEqual(await equityCurve(call, identity, { starting_equity_usd: 1000, as_of: now,
     closed_trades: [10, -4].map((pnl_usd, index) => ({ run_id: "closed-" + index, token: identity.token,
       pnl_usd, slippage_bps: 0, hold_sec: 60, closed_at: now - 60 + index })),
-  }), equity);
+  }, () => now * 1000), equity);
   assert.equal(inputs.size, 6);
-  assert.deepEqual(inputs.get("rug-check"), { ...identity, age_sec: 900, checks_raw: raw, provenance: {}, sources_disagree: false });
+  assert.deepEqual(inputs.get("rug-check"), { ...candidate, checks_raw: raw });
   assert.ok(Array.isArray(inputs.get("logger")));
 
   wire.executor = { ...execution, status: "FILLED", fill_price: 2, size_usd: 15, gas_usd: 1 };
-  await assert.rejects(executor(call, identity, { sizer: sizing, action: "entry", position: null,
+  await assert.rejects(executor(call, identity, { sizer: {status:sizing.status,size_usd:sizing.size_usd,max_slippage_bps:sizing.max_slippage_bps}, action: "entry", position: null,
     market: { quote_price: 2, expected_slippage_bps: 200, gas_usd: 1, now },
   }), /Output does not match request/);
 });

@@ -7,19 +7,30 @@ export const sizerSchema = z.strictObject({
   size_usd: z.number().nonnegative(),
   size_tokens: z.number().nonnegative().nullable(),
   max_slippage_bps: z.number().int().nonnegative(),
-  equity_at_decision: z.number().nonnegative(),
-  equity_age_sec: z.number().nonnegative(),
+  equity_at_decision: z.number().nonnegative().nullable(),
+  equity_age_sec: z.number().nonnegative().nullable(),
   risk_pct_used: z.number().min(0).max(1),
   reason: z.string(),
 });
 
-export type SizerInput = {
-  rug: { verdict: "PASS" | "FAIL" };
-  equity: { equity_usd: number; drawdown_pct: number; as_of: number } | null;
-  market: { liquidity_usd: number; volatility_pct: number; gas_usd: number; reference_price?: number };
-  config: {
-    max_risk_pct_per_trade: number; max_position_vs_pool_depth: number;
-    max_slippage_bps: number; halt_new_entries_dd: number; max_equity_age_sec: number;
-  };
-  now: number;
-};
+export const sizerInputSchema = z.strictObject({
+  ...handoff,
+  rug: z.strictObject({ verdict: z.enum(["PASS", "FAIL"]) }),
+  equity: z
+    .strictObject({ equity_usd: z.number(), drawdown_pct: z.number().nonnegative(), as_of: z.number().int() })
+    .nullish(),
+  market: z.strictObject({
+    liquidity_usd: z.number().nonnegative(),
+    volatility_pct: z.number().nonnegative(),
+    gas_usd: z.number().nonnegative(),
+    reference_price: z.number().positive().optional(),
+  }),
+  config: z.strictObject({
+    max_risk_pct_per_trade: z.number().nonnegative(),
+    max_position_vs_pool_depth: z.number().nonnegative(),
+    max_slippage_bps: z.number().nonnegative(),
+    halt_new_entries_dd: z.number().nonnegative(),
+    max_equity_age_sec: z.number().nonnegative(),
+  }),
+});
+export type SizerInput = Omit<z.input<typeof sizerInputSchema>, keyof typeof handoff>;

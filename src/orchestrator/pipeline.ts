@@ -1,10 +1,11 @@
+import type { ScannerRow } from "../../schemas/scanner.js";
 import { equityCurve } from "../agents/equity-curve.js";
 import { executor } from "../agents/executor.js";
 import { logger } from "../agents/logger.js";
 import { defaultRisk } from "../../schemas/risk-config.js";
 import type { RiskConfig } from "../../schemas/risk-config.js";
 import type { ExitPolicy } from "../../schemas/exit-policy.js";
-import { evaluateRugCheck, requireRugCheckPass } from "../agents/rug-check.js";
+import { rugCheck, requireRugCheckPass } from "../agents/rug-check.js";
 import { scanner } from "../agents/scanner.js";
 import type { LogHop } from "../../schemas/logger.js";
 import { riskBudget, sizer } from "../agents/sizer.js";
@@ -16,6 +17,9 @@ import type { Equity } from "../state/equity.js";
 import type { Positions } from "../state/positions.js";
 import { failureKind, log } from "../logging/operational.js";
 import { CandidateError } from "./errors.js";
+
+export const scannerLimits = { min_liquidity_usd: 15_000, min_age_sec: 600, min_vol_1h_usd: 10_000,
+  top_n: 20, dedup_window_sec: 3600 };
 
 export interface Pipeline {
   call: CallAgent;
@@ -32,7 +36,7 @@ export interface Pipeline {
   exitMode?: "profit_only" | "stop_loss";
 }
 
-export async function runCandidate(input: Merged, dependencies: Pipeline): Promise<"paper_fill" | "skipped"> {
+export async function runCandidate(input: Merged, dependencies: Pipeline, ranked?: ScannerRow): Promise<"paper_fill" | "skipped"> {
   const { identity, feed_entry, quote, expires_at } = input;
   const { audit, call, equity, positions, maxPositionBps, maxOpenPositions, signal, now = Date.now } = dependencies;
   const fresh = () => expires_at !== null && now() <= expires_at;
@@ -57,17 +61,16 @@ export async function runCandidate(input: Merged, dependencies: Pipeline): Promi
   if (open) {
     if (!open.exit_policy) {
       equity.mark(open, quote.value, quote.fetched_at);
-      await record("equity-mark", { current_equity: equity.current_equity, price_usd: quote.value });
+      await record("equity-mark", { marked_capital_cents: equity.markedCapitalCents, price_usd: quote.value });
     }
     return skip("position_already_open");
   }
   const { vol_1h_usd, liquidity_usd, age_sec } = feed_entry;
-  const scannerLimits = { min_liquidity_usd: 15_000, min_age_sec: 600, min_vol_1h_usd: 10_000,
-    top_n: 20, dedup_window_sec: 3600 };
-  const rows = await scanner(call, identity, {
+
+  const rows = ranked ? [ranked] : await scanner(call, identity, {
     run_id: identity.run_id,
-    feed: [feed_entry],
-    config: scannerLimits, seen: [], now: Math.floor(now() / 1000),
+    feed: [{ chain: identity.chain, token: identity.token, pair: identity.pair, trigger: feed_entry.trigger, liquidity_usd, vol_1h_usd, age_sec }],
+    config: scannerLimits, seen: [],
   });
   await record("scanner", rows);
   const scan = rows.find(row => !row.skipped);
@@ -76,7 +79,8 @@ export async function runCandidate(input: Merged, dependencies: Pipeline): Promi
 
   if (!fresh()) return skip("stale_recon");
   const { checks_raw, assessment, sources_disagree, provenance } = input;
-  const risk = evaluateRugCheck(identity, { checks_raw, assessment, sources_disagree, provenance, age_sec });
+  if (sources_disagree) return skip("critical_source_conflict");
+  const risk = await rugCheck(call, identity, { ...scan, checks_raw });
   await record("rug-check", risk);
   if (risk.verdict === "FAIL") dependencies.rejectRecon?.(identity);
   let pass;
@@ -89,30 +93,31 @@ export async function runCandidate(input: Merged, dependencies: Pipeline): Promi
   if (dependencies.equityMaxAgeMs && !equity.hasFreshMarks(positions.list(), now(), dependencies.equityMaxAgeMs)) {
     return skip("equity_marks_stale");
   }
-  const currentEquity = equity.current_equity;
+  const account = await equityCurve(call, identity, { starting_equity_usd: equity.initialCents / 100,
+    closed_trades: equity.closedTrades(), as_of: Math.floor(now() / 1000) }, now);
+  await record("equity-curve", account);
+  const currentEquity = Math.round(account.equity_usd * 100);
   const availableCents = equity.availableCapital - positions.committedCents;
   if (availableCents <= 0 || positions.count >= maxOpenPositions) {
     return skip("position_limit");
   }
-  const capacity = equity.entryCapacityCents(positions.committedCents, config.halt_new_entries_dd);
-  if (!capacity) return skip("portfolio_loss_budget_exhausted");
-  const budget = riskBudget(config, equity.drawdown_pct, currentEquity, scan.liquidity_usd);
+
   // The paper quote has no execution costs or price-impact estimate.
-  const decisionAt = Math.floor(now() / 1000);
   const proposal = await sizer(call, identity, {
-    rug: pass,
-    equity: { equity_usd: currentEquity / 100, drawdown_pct: equity.drawdown_pct,
-      as_of: Math.floor(equity.oldestMarkAt(positions.list(), now()) / 1000) },
+    rug: {verdict:pass.verdict},
+    equity: { equity_usd: account.equity_usd, drawdown_pct: account.drawdown_pct, as_of: account.as_of },
     market: { liquidity_usd: scan.liquidity_usd, volatility_pct: 0, gas_usd: 0, reference_price: quote.value },
     config: { max_risk_pct_per_trade: config.max_risk_pct_per_trade,
       max_position_vs_pool_depth: config.max_position_vs_pool_depth, max_slippage_bps: config.max_slippage_bps,
       halt_new_entries_dd: config.halt_new_entries_dd, max_equity_age_sec: (dependencies.equityMaxAgeMs ?? 60_000) / 1000 },
-    now: decisionAt,
-  });
+  }, now);
   if (proposal.status !== "SIZED") {
     await record("sizer", proposal);
     return skip(proposal.status === "HALTED" ? "sizer_halted" : "sizer_refused");
   }
+  const capacity = equity.entryCapacityCents(positions.committedCents, config.halt_new_entries_dd);
+  if (!capacity) return skip("portfolio_loss_budget_exhausted");
+  const budget = riskBudget(config, equity.drawdown_pct, currentEquity, scan.liquidity_usd);
   const costCents = sizePosition(Math.floor(Math.min(proposal.size_usd, availableCents / 100) * 100), currentEquity, Math.min(capacity, budget), maxPositionBps);
   await record("sizer", { proposal, approved_cents: costCents, portfolio_capacity_cents: capacity });
   if (costCents === 0) return skip("zero_size");
@@ -124,11 +129,11 @@ export async function runCandidate(input: Merged, dependencies: Pipeline): Promi
     : { ...exitBase, mode: "profit_only" };
   const recommendation = await executor(call, identity, { action: "entry", position: null,
     sizer: { status: proposal.status, size_usd: costCents / 100, max_slippage_bps: config.max_slippage_bps },
-    market: { quote_price: quote.value, expected_slippage_bps: 0, gas_usd: 0, now: Math.floor(now() / 1000) } });
+    market: { quote_price: quote.value, expected_slippage_bps: input.expected_slippage_bps, gas_usd: 0, now: Math.floor(now() / 1000) } });
   await record("executor", recommendation);
   if (recommendation.action !== "entry" || recommendation.status !== "FILLED" ||
       recommendation.fill_price !== quote.value || recommendation.size_usd !== costCents / 100 ||
-      recommendation.slippage_bps !== 0 || recommendation.gas_usd !== 0 || recommendation.tx_hash !== "sim") {
+      recommendation.slippage_bps !== input.expected_slippage_bps || recommendation.gas_usd !== 0 || !recommendation.tx_hash) {
     return skip("executor_rejected");
   }
   const latest = await dependencies.riskConfig?.() ?? config;
@@ -136,9 +141,9 @@ export async function runCandidate(input: Merged, dependencies: Pipeline): Promi
     return skip("equity_marks_stale");
   }
   const remaining = equity.entryCapacityCents(positions.committedCents, latest.halt_new_entries_dd);
-  const latestBudget = riskBudget(latest, equity.drawdown_pct, equity.current_equity, scan.liquidity_usd);
+  const latestBudget = riskBudget(latest, equity.drawdown_pct, equity.markedCapitalCents, scan.liquidity_usd);
   if (positions.get(identity) || positions.count >= maxOpenPositions ||
-      sizePosition(costCents, equity.current_equity, Math.min(remaining, latestBudget), maxPositionBps) < costCents) {
+      sizePosition(costCents, equity.markedCapitalCents, Math.min(remaining, latestBudget), maxPositionBps) < costCents) {
     return skip("entry_limit_changed");
   }
   if (!fresh() || signal?.aborted) return skip("expired_before_fill");
@@ -154,18 +159,7 @@ export async function runCandidate(input: Merged, dependencies: Pipeline): Promi
     { agent: "scanner", output: scan }, { agent: "rug", output: risk },
     { agent: "sizer", output: proposal }, { agent: "executor", output: recommendation },
   ];
-  try {
-    const projection = await equityCurve(call, identity, {
-      starting_equity_usd: equity.initialCents / 100,
-      closed_trades: equity.closedTrades(),
-      as_of: Math.floor(now() / 1000),
-    });
-    hops.push({ agent: "equity", output: projection });
-    await record("equity-curve", projection);
-  } catch (error) {
-    log("warn", "pipeline.observer_failed", { ...fields, stage: "equity-curve", failure_kind: failureKind(error) });
-    await audit({ identity, stage: "equity-curve", status: "failed", gaps: ["equity-curve_unavailable"] });
-  }
+  hops.push({ agent: "equity", output: account });
   try {
     const trace = await logger(call, identity, hops);
     const gaps = [...new Set([
@@ -177,6 +171,17 @@ export async function runCandidate(input: Merged, dependencies: Pipeline): Promi
   } catch (error) {
     log("warn", "pipeline.observer_failed", { ...fields, stage: "logger", failure_kind: failureKind(error) });
     await audit({ identity, stage: "logger", status: "failed", gaps: ["logger_unavailable"] });
+  }
+  try {
+    const projection = await equityCurve(call, identity, {
+      starting_equity_usd: equity.initialCents / 100,
+      closed_trades: equity.closedTrades(),
+      as_of: Math.floor(now() / 1000),
+    });
+    await record("equity-curve", projection);
+  } catch (error) {
+    log("warn", "pipeline.observer_failed", { ...fields, stage: "equity-curve", failure_kind: failureKind(error) });
+    await audit({ identity, stage: "equity-curve", status: "failed", gaps: ["equity-curve_unavailable"] });
   }
   return "paper_fill";
 }

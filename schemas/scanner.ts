@@ -8,7 +8,8 @@ export const scannerFeedFields = {
   age_sec: z.number().nonnegative(),
 };
 export const scannerRowSchema = z.strictObject({
-  ...handoff, ...scannerFeedFields,
+  ...handoff,
+  ...scannerFeedFields,
   discovered_at: z.number().int().nonnegative(),
   rank_score: z.number().int().nonnegative(),
   reason: z.string(),
@@ -16,17 +17,16 @@ export const scannerRowSchema = z.strictObject({
 });
 export const scannerSchema = z.array(scannerRowSchema);
 export type ScannerRow = z.infer<typeof scannerRowSchema>;
-export type ScannerInput = {
-  run_id: string;
-  feed: Array<Pick<ScannerRow, "chain" | "token" | "pair" | keyof typeof scannerFeedFields> &
-    { social_score?: number | null; as_of?: number }>;
-  config: {
-    min_liquidity_usd: number;
-    min_age_sec: number;
-    min_vol_1h_usd: number;
-    top_n: number;
-    dedup_window_sec: number;
-  };
-  seen: string[];
-  now: number;
-};
+export const scannerInputSchema = z.strictObject({
+  run_id: z.string(),
+  feed: z.array(z.strictObject({ chain: handoff.chain, pair: z.string(), token: z.string(), ...scannerFeedFields })),
+  config: z.strictObject({
+    min_liquidity_usd: z.number().nonnegative(),
+    min_age_sec: z.number().nonnegative(),
+    min_vol_1h_usd: z.number().nonnegative(),
+    top_n: z.number().int().nonnegative().default(20),
+    dedup_window_sec: z.number().nonnegative().default(3600),
+  }),
+  seen: z.array(z.string()),
+});
+export type ScannerInput = z.input<typeof scannerInputSchema>;

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const chainSchema = z.enum(["ethereum", "bsc", "base", "solana"]);
+export const chainSchema = z.enum(["ethereum", "bsc", "base", "solana", "polygon", "arbitrum"]);
 export type Chain = z.infer<typeof chainSchema>;
 
 export const addressMatches = (chain: Chain, value: string): boolean =>
@@ -21,3 +21,5 @@ export type Handoff = { run_id: string } & Target;
 
 export const money = z.number().int().nonnegative();
 export const assessment = z.enum(["clear", "flagged", "unknown"]);
+
+export const tradeKey = (id: Handoff): string => JSON.stringify([id.run_id,id.chain,id.token,id.pair]);

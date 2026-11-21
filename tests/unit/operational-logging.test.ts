@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { GET } from "../../api/dashboard-data.js";
+import { createDashboardApi } from "../../src/dashboard-api/routes.js";
 import { log, observe, withLogContext } from "../../src/logging/operational.js";
 
 test("operational records correlate concurrent runs and exclude exception contents", async t => {
@@ -46,17 +46,17 @@ test("dashboard request logs omit supplied headers and query strings", async t =
     }
   });
   const calls = t.mock.method(console, "error", () => {});
-  const response = await GET(new Request("https://example.test/api/dashboard-data?endpoint=/health&token=query-value", {
+  const app = createDashboardApi({token: "dashboard-test-secret", auditPath:"audit",riskPath:"risk", initialCents:100});
+  const response = await app.request("/health?token=query-value", {
     headers: { Authorization: "Bearer invalid-authorization-value" },
-  }));
+  });
   assert.equal(response.status, 401);
-  // Warnings go to stderr and produce one record even through the Vercel facade.
   assert.equal(calls.mock.callCount(), 1);
   const line = String(calls.mock.calls[0]?.arguments[0]);
   assert.ok(!/query-value|invalid-authorization-value|dashboard-test-secret/.test(line));
   const record = JSON.parse(line);
   assert.equal(record.event, "http.request");
-  assert.equal(record.route, "/api/dashboard-data/health");
+  assert.equal(record.route, "/health");
   assert.equal(record.status, 401);
   assert.ok(record.request_id);
 });

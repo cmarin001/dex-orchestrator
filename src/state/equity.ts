@@ -24,11 +24,11 @@ export class Equity {
   }
 
   get drawdown_pct(): number {
-    return this.#high ? (this.#high - this.current_equity) / this.#high : 0;
+    return this.#high ? (this.#high - this.markedCapitalCents) / this.#high : 0;
   }
   restoreRealized(cents: number) {
     this.#realizedCents += cents;
-    this.#high = Math.max(this.#high, this.current_equity);
+    this.#high = Math.max(this.#high, this.markedCapitalCents);
   }
 
   closedTrades(): EquityCurveInput["closed_trades"] {
@@ -68,14 +68,14 @@ export class Equity {
     if (!Number.isSafeInteger(valueCents) || valueCents < 0) throw new RangeError("Invalid marked position value");
     const key = targetKey(position);
     const gain = valueCents - position.cost_cents;
-    const next = this.current_equity - (this.#returns.get(key) ?? 0) + gain;
+    const next = this.markedCapitalCents - (this.#returns.get(key) ?? 0) + gain;
     if (!Number.isSafeInteger(next) || next < 0) throw new RangeError("Invalid marked equity");
     this.#returns.set(key, gain);
     this.#observed.set(key, observedAt);
     this.#high = Math.max(this.#high, next);
   }
 
-  get current_equity(): number {
+  get markedCapitalCents(): number {
     return [...this.#returns.values()].reduce((total, gain) => total + gain, this.availableCapital);
   }
 }

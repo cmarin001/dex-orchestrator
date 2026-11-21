@@ -1,6 +1,6 @@
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
-import { merge, REJECTION_TTL_MS, WATCHED_TTL_MS } from "../../src/cache/merge.js";
+import { merge, WATCHED_TTL_MS } from "../../src/cache/merge.js";
 import { ReconCache } from "../../src/cache/recon-cache.js";
 import type { Handoff } from "../../schemas/common.js";
 import type { ReconSnapshot } from "../../schemas/recon-snapshot.js";
@@ -44,8 +44,8 @@ test("uses watched TTL and remembers a rejection for the token across pairs", ()
   cache.put(snapshot);
   assert.equal(cache.read(identity, 10 + WATCHED_TTL_MS).stale, false);
   assert.equal(cache.read(identity, 11 + WATCHED_TTL_MS).stale, true);
-  cache.reject(target, 12);
-  assert.equal(cache.isRejected({ ...target, pair: "other" }, 11 + REJECTION_TTL_MS), true);
-  assert.equal(cache.isRejected(target, 12 + REJECTION_TTL_MS), false);
+  cache.reject(target);
+  assert.equal(cache.isRejected({ ...target, pair: "other" }), true);
+  assert.equal(cache.isRejected(target), true);
   assert.equal(cache.read(identity, 13).stale, true);
 });

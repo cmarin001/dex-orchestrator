@@ -1,7 +1,11 @@
+import { reconC } from "../agents/recon-c.js";
+import { socialActions } from "../tools/social.js";
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Target } from "../../schemas/common.js";
 import type { MarketSnapshot } from "../../schemas/recon-snapshot.js";
+import { toRugChecks } from "../../schemas/recon-checks.js";
+import { dexScreener } from "../tools/dexscreener.js";
 import { reconA } from "../agents/recon-a.js";
 import { reconB } from "../agents/recon-b.js";
 import type { ReconCache } from "../cache/recon-cache.js";
@@ -19,7 +23,6 @@ type Schedule = { target: Target; watched: boolean; trigger: MarketSnapshot["tri
 export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cache: ReconCache, signal: AbortSignal) {
   const schedules = new Map<string, Schedule>();
   let baseline: Awaited<ReturnType<typeof discover>>["statistics"] | undefined;
-  let scope: Parameters<typeof reconA>[3] = null;
   while (!signal.aborted) {
     const started = Date.now();
     const watched = new Map<string, Target>();
@@ -43,8 +46,11 @@ export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cac
       try {
         const found = await discover(options.discovery, undefined, baseline);
         baseline = found.statistics;
-        scope = { chains: [...new Set(found.scope.sources.map(({ chain }) => chain))], triggers: found.scope.triggers,
-          pools_scanned: Object.values(found.counts).reduce((total, count) => total + count, 0) };
+        const scope = {
+          chains: [...new Set(found.scope.sources.map(({ chain }) => chain))],
+          triggers: found.scope.triggers,
+          pools_scanned: Object.values(found.counts).reduce((total, count) => total + count, 0),
+        };
         for (const [key, item] of schedules) {
           if (!item.watched && !baseline.has(item.target.chain + ":" + item.target.pair)) {
             schedules.delete(key);
@@ -57,10 +63,14 @@ export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cac
           if (!schedules.has(key)) schedules.set(key, { target, watched: false, trigger, starts: 0, due: started });
         }
         log("info", "discovery.completed", { count: scope.pools_scanned });
-        await pipeline.audit({ stage: "market_discovery", status: "ok", gaps: [], detail: { ...scope, counts: found.counts } });
+        await pipeline.audit({
+          stage: "market_discovery",
+          status: "ok",
+          gaps: [],
+          detail: { ...scope, counts: found.counts },
+        });
       } catch (error) {
         baseline = undefined;
-        scope = null;
         log("warn", "discovery.failed", { failure_kind: failureKind(error) });
         await pipeline.audit({ stage: "market_discovery", status: "failed", gaps: ["discovery_unavailable"] });
       }
@@ -78,31 +88,107 @@ export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cac
       item.due = item.watched ? started + watchedIntervalMs : item.starts === 1 ? started + retryIntervalMs : Infinity;
       const identity = { ...item.target, run_id: randomUUID() };
       await withLogContext({ run_id: identity.run_id, chain: identity.chain }, async () => {
-        const [security, market] = await Promise.allSettled([
-          reconB(pipeline.call, identity, undefined, options.goPlusAccessToken),
-          reconA(pipeline.call, identity, undefined, scope, item.trigger),
-        ]);
-        if (signal.aborted) return;
-        const failedAt = Date.now();
-        const safe = security.status === "fulfilled" ? security.value : {
-          source_fetched_at: failedAt, assessment: "unknown" as const, checks_raw: {}, sources_disagree: false,
-          provenance: { recon_b: { source: "recon_b", fetched_at: failedAt, ok: false } }, reasons: [],
-        };
-        const { reasons, ...securitySnapshot } = safe;
-        const gaps = [
-          ...(market.status === "rejected" ? ["recon_a_missing"] : []),
-          ...(safe.assessment === "unknown" ? ["recon_b_incomplete"] : []),
-        ];
-        cache.put({ target: item.target, security: securitySnapshot, social: null,
-          ...(market.status === "fulfilled" ? { market: market.value } : { market_failed_at: failedAt }) });
-        log(gaps.length ? "warn" : "info", "recon.refreshed", { gap_count: gaps.length,
-          ...(market.status === "rejected" ? { market_failure_kind: failureKind(market.reason) } : {}),
-          ...(security.status === "rejected" ? { security_failure_kind: failureKind(security.reason) } : {}) });
-        await pipeline.audit({ identity, stage: "recon", status: gaps.length ? "failed" : "ok", gaps, detail: { reasons } });
+        const mode = item.trigger === "new_pair" ? "new_pairs" : item.trigger;
+        let gaps: string[] = [],
+          reasons: string[] = [];
+        try {
+          const rows = await reconA(pipeline.call, identity, {
+            run_id: identity.run_id,
+            chain: identity.chain,
+            modes: [mode],
+            seen: [],
+            config: { min_liquidity_usd: 15000, min_vol_1h_usd: 10000, min_age_sec: 600, max_age_sec: 86400 },
+          });
+          const row = rows.find(
+            (r) => !("status" in r) && !r.skipped && r.token === identity.token && r.pair === identity.pair,
+          );
+          if (!row || "status" in row) throw new Error("No matching market observation");
+          const sourceTime = row.source_fetched_at * 1000;
+          const field = (value: number) => ({ value, source: row.source, fetched_at: sourceTime });
+          const priceTime = Date.now();
+          const price = await dexScreener(identity);
+          const market = {
+            source_fetched_at: sourceTime,
+            trigger: row.trigger,
+            liquidity_usd: field(row.liquidity_usd),
+            vol_1h_usd: field(row.vol_1h_usd),
+            age_sec: field(row.age_sec),
+            price_usd: { value: price.price_usd, source: "dexscreener", fetched_at: priceTime },
+          };
+          try {
+            const risk = await reconB(
+              pipeline.call,
+              identity,
+              row.age_sec,
+              fetch,
+              options.goPlusAccessToken,
+              process.env.ETHERSCAN_API_KEY,
+            );
+            const checks_raw = toRugChecks(risk.checks_raw);
+            const sources = Object.entries(risk.provenance).filter(([, source]) => source.ok);
+            const fetched_at = sources.length ? Math.min(...sources.map(([, s]) => s.fetched_at * 1000)) : Date.now();
+            const provenance = Object.fromEntries(
+              sources.map(([name, s]) => [name, { source: name, ok: true, fetched_at: s.fetched_at * 1000 }]),
+            );
+            for (const [key, value] of Object.entries(checks_raw)) {
+              if (typeof value === "number" && sources.length)
+                provenance[key] = { source: sources.map(([n]) => n).join("+"), fetched_at, ok: true };
+            }
+            cache.put({
+              target: item.target,
+              market,
+              security: {
+                source_fetched_at: fetched_at,
+                checks_raw,
+                provenance,
+                assessment: risk.sources_disagree || !sources.length ? "unknown" : "clear",
+                sources_disagree: risk.sources_disagree,
+              },
+            });
+            reasons = [risk.reason];
+          } catch (error) {
+            gaps = ["recon_b_incomplete"];
+            reasons = [failureKind(error)];
+            cache.put({ target: item.target, market });
+          }
+        } catch (error) {
+          cache.put({ target: item.target, market_failed_at: Date.now() });
+          gaps = ["recon_a_missing"];
+          reasons = [failureKind(error)];
+        }
+        await pipeline.audit({
+          identity,
+          stage: "recon",
+          status: gaps.length ? "failed" : "ok",
+          gaps,
+          detail: { reasons },
+        });
+        const actions = socialActions([identity.token], 60);
+        if (actions.length && !signal.aborted && !gaps.length) {
+          try {
+            const social = await reconC(
+              pipeline.call,
+              identity,
+              { run_id: identity.run_id, chain: identity.chain, tokens: [identity.token], window_minutes: 60 },
+              actions,
+            );
+            await pipeline.audit({ identity, stage: "recon-c", status: "ok", gaps: [], detail: social });
+          } catch (error) {
+            await pipeline.audit({
+              identity,
+              stage: "recon-c",
+              status: "failed",
+              gaps: ["social_unavailable"],
+              detail: failureKind(error),
+            });
+          }
+        }
       });
     }
-    await sleep(Math.max(0, started + discoveryIntervalMs - Date.now()), undefined, { signal }).catch((error: unknown) => {
-      if (!signal.aborted) throw error;
-    });
+    await sleep(Math.max(0, started + discoveryIntervalMs - Date.now()), undefined, { signal }).catch(
+      (error: unknown) => {
+        if (!signal.aborted) throw error;
+      },
+    );
   }
 }

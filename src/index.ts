@@ -4,7 +4,7 @@ import { normalizeAddress, targetSchema } from "../schemas/common.js";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { responsesAgent } from "./agents/call.js";
-import { REJECTION_TTL_MS, targetKey } from "./cache/merge.js";
+import { targetKey } from "./cache/merge.js";
 import { fileAudit, readJournal } from "./logging/logger.js";
 import { failureKind, log } from "./logging/operational.js";
 import { ReconCache } from "./cache/recon-cache.js";
@@ -17,6 +17,8 @@ import { watchPositions } from "./exits/watcher.js";
 import { readRisk, requireFreshRisk } from "./state/risk-config.js";
 import { rugCheckSchema } from "../schemas/rug-check.js";
 import { scopeSchema } from "./tools/discovery.js";
+import { Inbox } from "./control/commands.js";
+import { WorkerControls } from "./control/worker.js";
 
 const integer = z.coerce.number().int().positive();
 const config = z.object({
@@ -34,6 +36,7 @@ const config = z.object({
   MARK_REFRESH_MS: integer.max(2_147_483_647).default(5000),
   PAPER_EXIT_MODE: z.enum(["profit_only", "stop_loss"]).default("profit_only"),
   RISK_CONFIG_PATH: z.string().default("data/risk-config.jsonl"),
+  CONTROL_INBOX_PATH: z.string().min(1).optional(),
   REQUIRE_RISK_CONFIG: z.enum(["true", "false"]).default("false"),
   MAX_EQUITY_AGE_SEC: integer.default(120),
   MAX_RISK_CONFIG_AGE_SEC: integer.default(3600),
@@ -54,12 +57,13 @@ async function main(): Promise<void> {
   const positions = new Positions();
   const cache = new ReconCache();
   const audit = fileAudit(env.AUDIT_PATH);
-  const rejectionCutoff = Date.now() - REJECTION_TTL_MS;
+  const controls = new WorkerControls(new Inbox(env.CONTROL_INBOX_PATH ?? env.AUDIT_PATH + ".controls"), env.RISK_CONFIG_PATH, cache, audit);
   for (const event of await readJournal(env.AUDIT_PATH)) {
+    controls.replay(event);
     const { position, close, identity } = event;
-    if (event.stage === "rug-check" && identity && Date.parse(event.at) > rejectionCutoff &&
+    if (event.stage === "rug-check" && identity &&
         rugCheckSchema.safeParse(event.detail).data?.verdict === "FAIL") {
-      cache.reject(identity, Date.parse(event.at));
+      cache.reject(identity);
     } else if (event.status === "paper_fill" && position) {
       positions.record(position);
       equity.mark(position, position.entry_price_usd, Date.parse(event.at));
@@ -77,7 +81,7 @@ async function main(): Promise<void> {
     process.once(signal, () => { log("info", "worker.shutdown_requested", { reason: signal }); abort.abort(); });
   }
   log("info", "worker.started", { count: uniqueTargets.length });
-  const watcher = watchPositions(positions, equity, audit, abort.signal, env.MARK_REFRESH_MS).finally(() => abort.abort());
+  await audit({stage:"worker_lifecycle",status:"ok",gaps:[],detail:"running"});
   const options = {
     targets: uniqueTargets, discovery, intervalMs: env.LOOP_INTERVAL_MS,
     breakerFailures: env.BREAKER_FAILURES, breakerCooldownMs: env.BREAKER_COOLDOWN_MS,
@@ -94,9 +98,11 @@ async function main(): Promise<void> {
     },
     equity, positions, maxPositionBps: env.MAX_POSITION_BPS, maxOpenPositions: env.MAX_OPEN_POSITIONS,
   };
+  const watcher = watchPositions(positions, equity, audit, abort.signal, pipeline.call, env.MARK_REFRESH_MS, controls.exits).finally(() => abort.abort());
   const refresh = refreshRecon(options, pipeline, cache, abort.signal).finally(() => abort.abort());
-  const loop = runLoop(options, pipeline, abort.signal, cache).finally(() => abort.abort());
+  const loop = runLoop(options, pipeline, abort.signal, cache, controls).finally(() => abort.abort());
   const results = await Promise.allSettled([loop, refresh, watcher]);
+  await audit({stage:"worker_lifecycle",status:"ok",gaps:[],detail:"stopped"});
   for (const result of results) if (result.status === "rejected") throw result.reason;
   log("info", "worker.stopped");
 }

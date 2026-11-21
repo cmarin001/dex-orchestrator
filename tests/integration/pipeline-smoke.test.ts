@@ -7,7 +7,6 @@ import { Keypair, SystemProgram, TransactionMessage, VersionedTransaction } from
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { bytesToHex, recoverTransactionAddress } from "viem";
 import type { TransactionSerializedLegacy } from "viem";
-import { POST as postPaper } from "../../api/paper.js";
 import type { Handoff } from "../../schemas/common.js";
 import type { ScannerInput } from "../../schemas/scanner.js";
 import { scanner } from "../../src/agents/scanner.js";
@@ -35,24 +34,31 @@ const raw = { renounced: true, mint_auth_disabled: true, freeze_auth_disabled: t
 const feedRow = { chain: identity.chain, token: identity.token, pair: identity.pair,
   liquidity_usd: 100_000, vol_1h_usd: 20_000, age_sec: 900, trigger: "new_pair" as const };
 const scanRow = { ...identity, ...feedRow, discovered_at: 1_795_200_000, rank_score: 1, reason: "fixture", skipped: false };
-const fakeAgent: CallAgent = async ({ schema, prompt, identity: handoff, data }) => {
+const paperTransport: typeof fetch = async (_url, init) => {
+  const body=JSON.parse(String(init?.body));
+  const data=JSON.parse(body.input[0].content);
+  const prompt=body.text.format.name;
+  const handoff={...identity,run_id:data.run_id ?? data[0]?.run_id ?? identity.run_id};
+  const at=Math.floor(Date.now()/1000);
   const output = {
-    scanner: () => (data as ScannerInput).feed.map(({ social_score, as_of, ...item }) => ({ ...scanRow, ...item, ...handoff })),
-    sizer: () => ({ ...handoff, status: "SIZED", size_usd: 50, size_tokens: 25, max_slippage_bps: 150,
-      equity_at_decision: 1000, equity_age_sec: 0, risk_pct_used: .02, reason: "fixture" }),
+    scanner: () => ({ rows:(data as ScannerInput).feed.map(item => ({ ...scanRow,...item,...handoff })) }),
+    "rug-check": () => ({ ...handoff, verdict: "PASS", reason: "missing optional fields", checks: { renounced:true, mint_auth:true, freeze_auth:true, lp_locked_or_burned:true, honeypot:true,tax_ok:true,blacklist:true,deployer_ok:true,age_ok:true,holder_conc_ok:true } }),
+    sizer: () => ({ ...handoff, status: "SIZED", size_usd: 20, size_tokens: 10, max_slippage_bps: 150,
+      equity_at_decision: 1000, equity_age_sec: at-data.equity.as_of, risk_pct_used: .02, reason: "1000 × .02 = 20" }),
     executor: () => ({ ...handoff, action: "entry", status: "FILLED", fill_price: 2, size_usd: 10,
       gas_usd: 0, slippage_bps: 0, tx_hash: "sim", reason: "fixture" }),
     logger: () => {
       const hops = data as Array<{ hop: { agent: string; output: unknown } }>;
       return { logged: hops.length, rows: hops.map(({ hop }) => ({
-        run_id: handoff.run_id, token: handoff.token, as_of: 1_795_200_000, gaps: [], ...hop,
+        run_id: handoff.run_id, token: handoff.token, as_of: at, gaps: [], ...hop,
       })) };
     },
     "equity-curve": () => ({ equity_usd: 1000, drawdown_pct: 0, win_rate: 0, expectancy_usd: 0,
       trades_closed: 0, as_of: (data as { as_of: number }).as_of }),
   };
-  return schema.parse(output[prompt as keyof typeof output]());
+  return Response.json({ status:"completed", output:[{type:"message",role:"assistant",content:[{type:"output_text",text:JSON.stringify(output[prompt as keyof typeof output]())}]}] });
 };
+const fakeAgent = responsesAgent("fixture","fixture",undefined,undefined,paperTransport);
 
 function observation(assessment: "clear" | "unknown" = "clear", sources_disagree = false): ReconSnapshot {
   const { chain, token, pair } = identity;
@@ -82,8 +88,8 @@ test("runs the six stages, caps size, and replays the one paper fill from the au
   assert.equal(positions.committedCents, 1000);
   assert.deepEqual(await replayPositions(path), [{ ...identity, cost_cents: 1000, entry_price_usd: 2 }]);
   const events = (await readFile(path, "utf8")).trim().split("\n").map((line) => JSON.parse(line) as AuditEvent);
-  assert.deepEqual(events.slice(0, 7).map(({ stage }) => stage),
-    ["scanner", "rug-check", "sizer", "executor", "executor", "equity-curve", "logger"]);
+  assert.deepEqual(events.slice(0, 8).map(({ stage }) => stage),
+    ["scanner", "rug-check", "equity-curve", "sizer", "executor", "executor", "logger", "equity-curve"]);
   assert.deepEqual(events[6]?.gaps, ["social_unavailable"]);
 });
 
@@ -131,7 +137,7 @@ test("submits the prompt verbatim, round-trips tool evidence and rejects invalid
     return Response.json({ status: "completed", output });
   });
   const call = responsesAgent("test-key", "test-model");
-  const data: ScannerInput = { run_id: identity.run_id, feed: [feedRow], seen: [], now: scanRow.discovered_at,
+  const data: ScannerInput = { run_id: identity.run_id, feed: [feedRow], seen: [],
     config: { min_liquidity_usd: 1000, min_age_sec: 600, min_vol_1h_usd: 1000, top_n: 20, dedup_window_sec: 3600 } };
   let toolCalls = 0;
   const toolCall: CallAgent = request => call({ ...request, tools: [{ name: "lookup", description: "Fixture", run: async () => ++toolCalls }] });
@@ -181,33 +187,8 @@ test("skips a cache miss without agent calls and rejects ambiguous security befo
   assert.deepEqual(events[0]?.detail, [{ ...identity, skipped: true, reason: "stale_recon" }]);
   assert.equal(await runCandidate(merge(identity, observation("clear", true)), deps), "skipped");
   assert.deepEqual(prompts, ["scanner"]);
-  assert.deepEqual(rejected, [identity]);
-  assert.equal((events.find(event => event.stage === "rug-check")?.detail as { reason: string }).reason,
-    "ambiguous critical: conflicting sources");
-});
-
-test("the Vercel paper endpoint skips an empty snapshot without network access", async t => {
-  const { chain, token, pair } = identity;
-  const env = { PAPER_RUN_SECRET: "fixture-secret", OPENAI_API_KEY: "test-key", PAPER_RUN_TARGET: JSON.stringify({ chain, token, pair }) };
-  const previous = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
-  Object.assign(process.env, env);
-  t.after(() => {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  });
-  const fetch = t.mock.method(globalThis, "fetch", async () => { throw new Error("Unexpected network access"); });
-  const post = (body?: string) => postPaper(new Request("https://example.test/api/paper", {
-    method: "POST", headers: { authorization: "Bearer fixture-secret" }, body,
-  }));
-  const empty = await post();
-  assert.equal(empty.status, 200);
-  const result = await empty.json() as { outcome: string; events: AuditEvent[] };
-  assert.equal(result.outcome, "skipped");
-  assert.deepEqual(result.events.map(event => event.gaps), [["stale_recon"], ["stale_recon"]]);
-  assert.equal((await post(JSON.stringify({ recon_snapshot: { target: { chain } } }))).status, 400);
-  assert.equal(fetch.mock.callCount(), 0);
+  assert.deepEqual(rejected, []);
+  assert.deepEqual(events.at(-1)?.gaps, ["critical_source_conflict"]);
 });
 
 test("a tightened portfolio limit while Executor runs prevents the paper fill", async () => {

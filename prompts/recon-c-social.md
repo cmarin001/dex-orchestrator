@@ -36,7 +36,7 @@ OUTPUT (array):
     "mentions_1h": n, "unique_accounts": n,
     "sentiment":"positive|neutral|negative",
     "notable_mentions": n, "bot_heavy": b,
-    "social_score": n, "sources":["x","reddit","telegram"],
+    "social_score": n|null, "sources":["x","reddit","telegram"],
     "as_of": ts } ]
 
 RULES:

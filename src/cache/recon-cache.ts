@@ -1,10 +1,10 @@
 import type { Target } from "../../schemas/common.js";
 import type { ReconSnapshot } from "../../schemas/recon-snapshot.js";
-import { NEW_TTL_MS, REJECTION_TTL_MS, WATCHED_TTL_MS, merge, reconKey, targetKey } from "./merge.js";
+import { NEW_TTL_MS, WATCHED_TTL_MS, merge, reconKey, targetKey } from "./merge.js";
 
 export class ReconCache {
   private readonly entries = new Map<string, { target: Target; watched: boolean; snapshot?: ReconSnapshot }>();
-  private readonly rejectedUntil = new Map<string, number>();
+  private readonly rejected = new Set<string>();
 
   track(target: Target, watched: boolean) {
     const key = reconKey(target);
@@ -25,17 +25,14 @@ export class ReconCache {
     return merge(identity, entry?.snapshot, entry?.watched ? WATCHED_TTL_MS : NEW_TTL_MS, now);
   }
 
-  reject(target: Target, at = Date.now()) {
+  reject(target: Pick<Target,"chain"|"token">) {
     const key = reconKey(target);
-    this.rejectedUntil.set(key, at + REJECTION_TTL_MS);
+    this.rejected.add(key);
     const entry = this.entries.get(key);
     if (entry) entry.snapshot = undefined;
   }
 
-  isRejected(target: Target, now = Date.now()) {
-    const key = reconKey(target);
-    if ((this.rejectedUntil.get(key) ?? 0) > now) return true;
-    this.rejectedUntil.delete(key);
-    return false;
+  isRejected(target: Target) {
+    return this.rejected.has(reconKey(target));
   }
 }

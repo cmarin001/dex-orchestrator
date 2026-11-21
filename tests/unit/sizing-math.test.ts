@@ -16,9 +16,9 @@ test("marks at current value without double counting previous marks", () => {
   const position = { run_id: "test", chain: "base" as const, token: "token", pair: "pair",
     cost_cents: 1000, entry_price_usd: 2 };
   equity.mark(position, 4);
-  assert.equal(equity.current_equity, 101_000);
+  assert.equal(equity.markedCapitalCents, 101_000);
   equity.mark(position, 1);
-  assert.equal(equity.current_equity, 99_500);
+  assert.equal(equity.markedCapitalCents, 99_500);
 });
 
 test("reserves cash against the portfolio peak even if every holding becomes worthless", () => {

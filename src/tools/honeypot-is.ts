@@ -21,12 +21,12 @@ export async function honeypotIs({ chain, token, pair }: Target, request: Fetch 
   const parsed = response.safeParse(await getJson(url, request));
   if (parsed.success) {
     const data = parsed.data;
-    if (data.honeypotResult?.isHoneypot) return { assessment: "flagged", reason: "Honeypot.is flagged token", checks_raw: { honeypot_sim_ok: false } };
+    if (data.honeypotResult?.isHoneypot) return { assessment: "flagged", reason: "Honeypot.is flagged token" };
     if (data.simulationSuccess && data.honeypotResult?.isHoneypot === false &&
         data.pair && normalizeAddress(chain, data.pair.pair.address) === pair &&
         data.token && normalizeAddress(chain, data.token.address) === token &&
         data.chain?.id === String(evmChainIds[chain])) {
-      return { assessment: "clear", reason: "Honeypot.is simulation returned clear", checks_raw: { honeypot_sim_ok: true } };
+      return { assessment: "clear", reason: "Honeypot.is simulation returned clear" };
     }
   }
   return { assessment: "unknown", reason: "No matching successful Honeypot.is simulation" };

@@ -1,3 +1,4 @@
+import { tradeKey } from "../../schemas/common.js";
 import { mkdir, open, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { SystemError } from "../orchestrator/errors.js";
@@ -50,8 +51,8 @@ export async function replayPositions(path: string): Promise<Position[]> {
   for (const event of await readJournal(path)) {
     if (event.status !== "paper_fill" && event.status !== "paper_close") continue;
     if (!event.position) throw new SystemError("Missing paper position");
-    if (event.status === "paper_fill") open.set(event.position.run_id, event.position);
-    else open.delete(event.position.run_id);
+    if (event.status === "paper_fill") open.set(tradeKey(event.position), event.position);
+    else open.delete(tradeKey(event.position));
   }
   return [...open.values()];
 }

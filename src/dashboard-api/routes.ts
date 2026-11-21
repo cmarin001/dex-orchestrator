@@ -1,17 +1,23 @@
+import { tradeKey } from "../../schemas/common.js";
+import { equityCurveSchema } from "../../schemas/equity-curve.js";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
-import { defaultRisk, riskConfigSchema } from "../../schemas/risk-config.js";
+import { riskConfigSchema } from "../../schemas/risk-config.js";
 import { elapsed, failureKind, log, logHttp, startTimer } from "../logging/operational.js";
 import { liveViews } from "../live/publisher.js";
 import { projectTradeHistory } from "../logging/projections/trade-history.js";
 import { readJournal } from "../logging/logger.js";
 import type { JournalEvent } from "../logging/types.js";
-import { appendRisk, readRisk } from "../state/risk-config.js";
+import { createControl, controlInputs } from "../control/service.js";
+import { ControlConflict } from "../control/commands.js";
 import { bearerAuth } from "./auth.js";
 
 export const dashboardRoutes = new Set(["/health", "/equity", "/journal", "/live-view", "/live-view/stream", "/trades", "/risk-config"]);
+const apiPaths = new Set([...["health","status","positions","equity","audit","candidates","risk"],
+  ...Object.keys(controlInputs).map(name => "controls/" + name)].map(name => "/api/v1/" + name));
 
 const querySchema = z.object({
   from: z.iso.date().optional(), to: z.iso.date().optional(), run_id: z.string().optional(),
@@ -20,14 +26,16 @@ const querySchema = z.object({
 });
 
 export function createDashboardApi(options: { token: string; auditPath: string; riskPath: string;
-  initialCents: number; actor?: string; origin?: string; events?: () => Promise<JournalEvent[]>; readOnly?: boolean }) {
+  initialCents: number; actor?: string; origin?: string; events?: () => Promise<JournalEvent[]>; inboxPath?: string }) {
   const app = new Hono();
-  app.use("*", (c, next) => logHttp(dashboardRoutes.has(c.req.path) ? c.req.path : "unknown", c.req.method,
+  const control = createControl(options);
+  app.use("*", (c, next) => logHttp(dashboardRoutes.has(c.req.path) || apiPaths.has(c.req.path) ? c.req.path : "unknown", c.req.method,
     async () => { await next(); return c.res; }));
   if (options.origin) app.use("*", cors({ origin: options.origin, allowHeaders: ["Authorization", "Content-Type"],
     allowMethods: ["GET", "POST", "OPTIONS"] }));
   app.use("*", async (c, next) => { c.header("Cache-Control", "no-store"); await next(); });
   app.use("*", bearerAuth(options.token));
+  app.use("*", bodyLimit({ maxSize: 16_384, onError: c => c.json({error:"request_too_large"},413) }));
   const events = options.events ?? (() => readJournal(options.auditPath, true));
   app.onError((error, c) => { log("error", "dashboard.handler_failed", { failure_kind: failureKind(error) }); return c.json({ error: "dashboard_data_unavailable" }, 503); });
   app.get("/health", c => c.json({ status: "ok", mode: "paper" }));
@@ -69,15 +77,12 @@ export function createDashboardApi(options: { token: string; auditPath: string; 
     const realized = projectTradeHistory(journal).reduce((sum, row) => sum + Math.round(row.pnl_usd * 100), 0);
     const open = new Map<string, number>();
     for (const e of journal) {
-      if (e.status === "paper_fill" && e.position) open.set(e.position.run_id, e.position.cost_cents);
-      if (e.status === "paper_close" && e.position) open.delete(e.position.run_id);
+      if (e.status === "paper_fill" && e.position) open.set(tradeKey(e.position), e.position.cost_cents);
+      if (e.status === "paper_close" && e.position) open.delete(tradeKey(e.position));
     }
-    const markedCents = liveViews(journal).reduce((sum, view) => {
-      const entry = view.marks.findLast(mark => mark.side === "buy");
-      if (!entry || !view.current_mark) return sum;
-      return sum + Math.round(entry.size_usd * 100 * (view.current_mark.price / view.entry_price - 1));
-    }, 0);
-    return c.json({ current_equity: options.initialCents + realized + markedCents,
+    const last = journal.findLast(event => event.stage === "equity-curve" && event.status === "ok");
+    const published = equityCurveSchema.safeParse(last?.detail);
+    return c.json({ current_equity: published.success ? Math.round(published.data.equity_usd * 100) : null,
       realized_cents: realized, open_positions: open.size, committed_cents: [...open.values()].reduce((a, b) => a + b, 0) });
   });
   app.get("/trades", async c => {
@@ -95,18 +100,38 @@ export function createDashboardApi(options: { token: string; auditPath: string; 
     const last = items.at(-1);
     return c.json({ items, next_cursor: last && found + 1 + limit < all.length ? key(last) : null });
   });
-  app.get("/risk-config", async c => {
-    if (options.readOnly) return c.json({ config: defaultRisk, as_of: null, actor: null, editable: false });
-    const revision = await readRisk(options.riskPath);
-    return c.json(revision ? { ...revision, editable: true } : { config: defaultRisk, as_of: null, actor: null, editable: true });
-  });
+  app.get("/risk-config", async c => c.json({ ...await control.risk(), editable: true }));
   app.post("/risk-config", async c => {
-    if (options.readOnly) return c.json({ error: "configure_the_worker_api_to_edit_risk" }, 503);
-    const raw = await c.req.json().catch(() => null);
-    const risk = riskConfigSchema.safeParse(raw);
-    if (!risk.success) return c.json({ error: "invalid_risk_config", issues: risk.error.issues }, 400);
-    const revision = await appendRisk(options.riskPath, { as_of: Date.now(), actor: options.actor ?? "operator", config: risk.data });
-    return c.json({ ...revision, editable: true }, 201);
+    const risk = riskConfigSchema.safeParse(await c.req.json().catch(() => null));
+    if (!risk.success) return c.json({ error: "invalid_risk_config" }, 400);
+    const request = await control.submit("risk", {config:risk.data}, options.actor ?? "operator");
+    return c.json({ ...await control.risk(), editable:true, request }, 202);
   });
+  for (const name of ["health","status","positions","equity","candidates","risk"] as const) {
+    app.get("/api/v1/" + name, async c => c.json(await control[name]()));
+  }
+  app.get("/api/v1/audit", async c => {
+    const input = await control.audit(c.req.query()).catch(error => {
+      if (error instanceof z.ZodError) return null;
+      throw error;
+    });
+    return input ? c.json(input) : c.json({error:"invalid_filters"},400);
+  });
+  for (const name of Object.keys(controlInputs) as Array<keyof typeof controlInputs>) {
+    app.post("/api/v1/controls/" + name, async c => {
+      const text = await c.req.text();
+      let body: unknown;
+      try { body = text ? JSON.parse(text) : {}; }
+      catch { return c.json({error:"invalid_json"},400); }
+      if (!controlInputs[name].safeParse(body).success) return c.json({error:"invalid_control"},400);
+      try {
+        const result = await control.submit(name,body,options.actor ?? "operator");
+        return c.json(result,result.state === "queued" ? 202 : 200);
+      } catch (error) {
+        if (error instanceof ControlConflict) return c.json({error:error.message},409);
+        throw error;
+      }
+    });
+  }
   return app;
 }
