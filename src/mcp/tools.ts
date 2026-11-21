@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ZodObject } from "zod";
 import { empty, ControlConflict } from "../control/commands.js";
 import { auditQuery, controlInputs, type ControlService } from "../control/service.js";
+import { changes, input, type Change } from "../control/phase3.js";
 import { failureKind, log } from "../logging/operational.js";
 
 export function createMcp(control: ControlService, actor: string) {
@@ -35,6 +36,27 @@ export function createMcp(control: ControlService, actor: string) {
   ] as const;
   for (const [name, type, description] of controls) {
     tool(name, description, controlInputs[type], false, input => control.submit(type,input,actor));
+  }
+  const reads = [
+    ["get_providers","providers"],["list_strategies","strategies"],["get_mode","mode"],
+    ["get_chain_routing","chain"],["get_budget","budget"],["get_recent_signals","signals"],
+  ] as const;
+  for (const [name,resource] of reads) {
+    tool(name,"Read "+resource+" from the worker journal.",empty,true,()=>control.phase3.read(resource));
+  }
+  for (const [name,resource] of [["get_provider","providers"],["get_strategy","strategies"]] as const) {
+    tool(name,"Read a single "+resource.slice(0,-1)+" by ID.",input.id,true,async raw=>{
+      const {id}=input.id.parse(raw);
+      const result=await control.phase3.read(resource,id);
+      const items="items" in result ? result.items : [];
+      if (!Array.isArray(items) || !items.length) throw new ControlConflict("Unknown "+resource.slice(0,-1));
+      return items[0]!;
+    });
+  }
+  for (const name of Object.keys(changes) as Change[]) {
+    // The worker applies these on the next cycle. Approvals cannot directly submit a trade.
+    tool(name,"Queue "+name.replaceAll("_"," ")+" for the next worker cycle.",changes[name].schema,false,
+      raw=>control.phase3.mutate(name,raw,actor));
   }
   server.registerResource("audit journal", "audit://journal", {mimeType:"application/json",description:"Read-only audit tail."},
     async uri => ({contents:[{uri:uri.href,mimeType:"application/json",text:JSON.stringify(await control.audit({limit:50}))}]}));

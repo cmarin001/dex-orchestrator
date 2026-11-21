@@ -28,6 +28,8 @@ export function rugCheck(call: CallAgent, identity: Handoff, candidate: z.input<
     schema: rugCheckSchema,
     identity,
     data,
+    local: () => ({...identity,checks,verdict:failed?"FAIL":"PASS",
+      reason:missingCritical?"ambiguous critical evidence":failed?"failed safety check":missingOptional?"optional evidence unavailable":"clear"}),
     validate: (out) =>
       matchesIdentity(out, identity) &&
       out.verdict === (failed ? "FAIL" : "PASS") &&

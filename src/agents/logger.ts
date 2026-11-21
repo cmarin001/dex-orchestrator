@@ -50,6 +50,11 @@ export function logger(
     schema: loggerSchema,
     wireSchema,
     data,
+    local: () => ({logged:data.length,rows:data.map(({run_id,token,hop},i)=>{
+      const obj=objects[i];
+      return {run_id,token,agent:hop.agent,as_of:start,
+        ...(obj ? {output:obj,gaps:fields[hop.agent].filter(field=>!Object.hasOwn(obj,field))} : {malformed:true,gaps:["*"]})};
+    })}),
     validate: (out) =>
       out.logged === data.length &&
       out.rows.length === data.length &&

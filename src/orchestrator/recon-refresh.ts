@@ -31,6 +31,7 @@ export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cac
       watched.set(reconKey(target), target);
     }
     for (const [key, target] of watched) {
+      if (pipeline.mode && !pipeline.mode.chain.enabledChains.includes(target.chain) && !pipeline.positions.get(target)) continue;
       const existing = schedules.get(key);
       if (!existing?.watched || existing.target.pair !== target.pair) {
         schedules.set(key, { target, watched: true, trigger: "new_pair", starts: 0, due: started });
@@ -44,7 +45,9 @@ export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cac
     }
     if (options.discovery) {
       try {
-        const found = await discover(options.discovery, undefined, baseline);
+        const scopeNow = pipeline.mode ? {...options.discovery,sources:options.discovery.sources.filter(source=>
+          pipeline.mode!.chain.enabledChains.includes(source.chain))} : options.discovery;
+        const found = await discover(scopeNow, undefined, baseline);
         baseline = found.statistics;
         const scope = {
           chains: [...new Set(found.scope.sources.map(({ chain }) => chain))],
@@ -85,7 +88,7 @@ export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cac
       }
       if (item.due > started || (!item.watched && !baseline?.has(item.target.chain + ":" + item.target.pair))) continue;
       item.starts += 1;
-      item.due = item.watched ? started + watchedIntervalMs : item.starts === 1 ? started + retryIntervalMs : Infinity;
+      item.due = item.watched ? started + (pipeline.mode ? 60_000 : watchedIntervalMs) : item.starts === 1 ? started + retryIntervalMs : Infinity;
       const identity = { ...item.target, run_id: randomUUID() };
       await withLogContext({ run_id: identity.run_id, chain: identity.chain }, async () => {
         const mode = item.trigger === "new_pair" ? "new_pairs" : item.trigger;
@@ -107,6 +110,7 @@ export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cac
           const field = (value: number) => ({ value, source: row.source, fetched_at: sourceTime });
           const priceTime = Date.now();
           const price = await dexScreener(identity);
+          const indicative = (value:number)=>({value,source:"dexscreener",fetched_at:priceTime});
           const market = {
             source_fetched_at: sourceTime,
             trigger: row.trigger,
@@ -114,6 +118,8 @@ export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cac
             vol_1h_usd: field(row.vol_1h_usd),
             age_sec: field(row.age_sec),
             price_usd: { value: price.price_usd, source: "dexscreener", fetched_at: priceTime },
+            vol_24h_usd:price.vol_24h_usd===undefined?undefined:indicative(price.vol_24h_usd),
+            market_cap_usd:price.market_cap_usd===undefined?undefined:indicative(price.market_cap_usd),
           };
           try {
             const risk = await reconB(
@@ -134,7 +140,7 @@ export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cac
               if (typeof value === "number" && sources.length)
                 provenance[key] = { source: sources.map(([n]) => n).join("+"), fetched_at, ok: true };
             }
-            cache.put({
+            const snapshot={
               target: item.target,
               market,
               security: {
@@ -144,7 +150,9 @@ export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cac
                 assessment: risk.sources_disagree || !sources.length ? "unknown" : "clear",
                 sources_disagree: risk.sources_disagree,
               },
-            });
+            } as const;
+            cache.put(snapshot);
+            if (pipeline.mode) pipeline.mode.observe(cache.read(identity));
             reasons = [risk.reason];
           } catch (error) {
             gaps = ["recon_b_incomplete"];
@@ -164,7 +172,7 @@ export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cac
           detail: { reasons },
         });
         const actions = socialActions([identity.token], 60);
-        if (actions.length && !signal.aborted && !gaps.length) {
+        if (actions.length && !signal.aborted && !gaps.length && (!pipeline.mode || pipeline.mode.usesModels())) {
           try {
             const social = await reconC(
               pipeline.call,

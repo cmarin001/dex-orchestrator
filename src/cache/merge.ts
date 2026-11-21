@@ -41,6 +41,8 @@ export function merge(identity: Handoff, snapshot: ReconSnapshot | undefined, tt
       age_sec: market.age_sec.value, social_score, as_of: Math.floor(market.source_fetched_at / 1000),
     } : null,
     quote: marketFresh ? market.price_usd : null,
+    volume_24h: marketFresh && market.vol_24h_usd && fresh(market.vol_24h_usd.fetched_at) ? market.vol_24h_usd : undefined,
+    market_cap: marketFresh && market.market_cap_usd && fresh(market.market_cap_usd.fetched_at) ? market.market_cap_usd : undefined,
     checks_raw: securityFresh ? security.checks_raw : {},
     provenance: securityFresh ? security.provenance : {},
     assessment: securityFresh ? security.assessment : "unknown" as const,

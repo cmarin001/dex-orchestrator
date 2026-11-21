@@ -4,7 +4,7 @@ import type { Chain, Target } from "../../schemas/common.js";
 import { getJson } from "./dexscreener.js";
 import type { Fetch } from "./dexscreener.js";
 
-const network = { ethereum: "eth", polygon: "polygon_pos", arbitrum: "arbitrum", bsc: "bsc", base: "base", solana: "solana" };
+const network = { ethereum: "eth", polygon: "polygon_pos", arbitrum: "arbitrum", optimism: "optimism", bsc: "bsc", base: "base", solana: "solana" };
 const discoveryTrigger = z.enum(["new_pair", "vol_spike", "liq_spike"]);
 export const scopeSchema = z.strictObject({
   sources: z.array(z.strictObject({ chain: chainSchema, dex: z.string().regex(/^[a-z0-9_-]+$/), pages: z.number().int().min(1).max(3) })).max(8),

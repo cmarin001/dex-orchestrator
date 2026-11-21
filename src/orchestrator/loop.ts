@@ -37,14 +37,17 @@ export async function runLoop(
     let delay = options.intervalMs;
     let breakerUntil: number | null = null;
     await controls?.drain(pipeline.positions);
+    await pipeline.mode?.beginCycle(started);
     await pipeline.live?.reconcile();
-    const targets = cache.list();
+    const targets = cache.list().filter(target=>!pipeline.mode || pipeline.mode.chain.enabledChains.includes(target.chain));
     const run_id = randomUUID();
     const snapshots = new Map<string, ReturnType<ReconCache["read"]>>();
     for (const target of targets) {
       const identity = { ...target, run_id };
       try {
-        snapshots.set(targetKey(target), cache.read(identity));
+        const snapshot=cache.read(identity);
+        pipeline.mode?.observe(snapshot);
+        snapshots.set(targetKey(target),snapshot);
       } catch (error) {
         if (!(error instanceof CandidateError)) throw error;
         await pipeline.audit({ identity, stage: "merge", status: "failed", gaps: [error.message] });
@@ -72,6 +75,7 @@ export async function runLoop(
           { run_id, feed, seen: [...seen.keys()], config: scannerLimits },
         );
         ranking = new Map(rows.map((row) => [targetKey(row), row]));
+        pipeline.mode?.rankChains(rows);
         if (controls) await pipeline.audit({stage:"scanner_batch",status:"ok",gaps:[],detail:rows});
       } catch (error) {
         rankingError = error;
@@ -111,7 +115,7 @@ export async function runLoop(
             { ...pipeline, signal, rejectRecon: (target) => cache.reject(target) },
             row,
           );
-          if (row && !row.skipped) seen.set(target.token, Date.now() + scannerLimits.dedup_window_sec * 1000);
+          if (row && !row.skipped && (!pipeline.mode || outcome !== "skipped")) seen.set(target.token, Date.now() + scannerLimits.dedup_window_sec * 1000);
           log("info", "candidate.completed", { outcome, duration_ms: elapsed(candidateStarted) });
         });
         failures = 0;

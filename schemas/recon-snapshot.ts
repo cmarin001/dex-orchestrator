@@ -22,6 +22,8 @@ export const marketSnapshotSchema = z.strictObject({
   price_usd: sourcedNumber.extend({ value: z.number().positive() }),
   liquidity_usd: sourcedNumber.extend({ value: z.number().nonnegative() }),
   vol_1h_usd: sourcedNumber.extend({ value: z.number().nonnegative() }),
+  vol_24h_usd: sourcedNumber.extend({ value:z.number().nonnegative() }).optional(),
+  market_cap_usd: sourcedNumber.extend({ value:z.number().nonnegative() }).optional(),
   age_sec: sourcedNumber.extend({ value: z.number().nonnegative() }),
 });
 export const securitySnapshotSchema = z.strictObject({

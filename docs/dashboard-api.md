@@ -59,3 +59,29 @@ of the same live journal. Disarming blocks new entries, exits, and fee
 replacements. Attempts already committed to the wallet journal can finish
 submission and remain under reconciliation. Commands are queued, so this
 switch takes effect when the worker applies it.
+
+## Phase 3 control plane
+
+All endpoints start with `/api/v1` and use the dashboard bearer token.
+Controls return a request ID for the worker queue. Use the same
+`request_id` and payload to check the action receipt. The worker applies
+changes at cycle boundaries and retains submitted orders and open positions.
+
+| GET / POST path | MCP tools | Behavior |
+| --- | --- | --- |
+| GET /providers and /providers/:id | get_providers, get_provider | Configuration, last observed health, and budget usage |
+| POST /providers/:id/enable and /disable | enable_provider, disable_provider | Toggle a configured provider |
+| GET /strategies and /strategies/:id | list_strategies, get_strategy | Definitions, parameters, enabled states and recent win rate |
+| POST /strategies/:id/enable, /disable and /params | enable_strategy, disable_strategy, update_strategy_params | Submit a strategy change |
+| POST /strategies/reload | reload_strategies | Reload trusted local strategy files |
+| GET and POST /mode | get_mode, set_mode | Current and next modes with a change reason |
+| GET and POST /chain, POST /controls/chain | get_chain_routing, set_chain_routing | Chain selection and allocation |
+| GET and POST /budget | get_budget, set_budget | Budget and exhaustion behavior |
+| GET /signals | get_recent_signals | Latest signals with their decision status |
+| POST /controls/approve/:id and /controls/reject/:id | approve_signal, reject_signal | Record a human decision while the signal is fresh |
+
+Example mode payload is `{"config":{"mode":"human"},"reason":"review new entries"}`.
+Set parameters with `{"params":{"minLiq":60000}}` on
+`/strategies/volume-spike/params`. An approval expires in 120 seconds.
+An approved signal still passes the trading pipeline on reevaluation and is
+consumed at most once. No API can directly call the signer.

@@ -71,6 +71,21 @@ export async function reconB(
     identity,
     data: reconBInput.parse({ ...identity, age_sec }),
     tools: actions.map((a) => a.tool),
+    local: async () => {
+      await Promise.all(actions.map(action=>action.tool.run()));
+      const evidence=securityEvidence(identity,actions[0]?.observation()?.data,
+        actions[1]?.observation()?.data,sol ? actions[2]?.observation()?.data : null);
+      // Missing optional sources keep a timestamp for the handoff, but never count as evidence.
+      const absent={ok:false,fetched_at:Math.floor(Date.now()/1000)};
+      const a=(i:number)=>{
+        const obs=actions[i]?.observation();
+        return obs ? {ok:obs.ok,fetched_at:obs.fetched_at}:absent;
+      };
+      return {...identity,checks_raw:evidence.raw,confidence:evidence.confidence,sources_disagree:evidence.conflict,
+        reason:evidence.conflict?"sources disagree":"deterministic source evidence",
+        provenance:{goplus:a(0),honeypot_is:a(1),rugcheck:{...(sol?a(2):absent),applicable:sol},
+          etherscan:sol?absent:a(2)}};
+    },
     validate: (output) => {
       const evidence = securityEvidence(
         identity,

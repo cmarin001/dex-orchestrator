@@ -3,7 +3,7 @@ import type { Target } from "../../schemas/common.js";
 import { getJson } from "./dexscreener.js";
 import type { Fetch } from "./dexscreener.js";
 
-export const evmChainIds = { ethereum: 1, polygon: 137, arbitrum: 42161, bsc: 56, base: 8453 } as const;
+export const evmChainIds = { ethereum: 1, polygon: 137, arbitrum: 42161, optimism: 10, bsc: 56, base: 8453 } as const;
 export type Finding = { assessment: "clear" | "flagged" | "unknown"; reason: string };
 const bit = z.enum(["0", "1"]).optional();
 const authority = z.object({ status: bit });
