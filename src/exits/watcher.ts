@@ -11,10 +11,11 @@ import { CandidateError, SystemError } from "../orchestrator/errors.js";
 import type { Equity } from "../state/equity.js";
 import type { Positions } from "../state/positions.js";
 import type { LiveExecution } from "../wallet/live.js";
+import type { ModeRuntime } from "../mode/runtime.js";
 import { dexScreener } from "../tools/dexscreener.js";
 import { activeTarget, canExit } from "./policy.js";
 
-export async function watchPositions(positions: Positions, equity: Equity, audit: Audit, signal: AbortSignal, call: CallAgent, refreshMs = 5000, requestedExits = new Set<string>(), live?: LiveExecution, liveSlippage?: () => Promise<number>) {
+export async function watchPositions(positions: Positions, equity: Equity, audit: Audit, signal: AbortSignal, call: CallAgent, refreshMs = 5000, requestedExits = new Set<string>(), live?: LiveExecution, liveSlippage?: () => Promise<number>, mode?:ModeRuntime) {
   log("info", "watcher.started");
   const targets = new Map<string, number>();
   while (!signal.aborted) {
@@ -47,17 +48,20 @@ export async function watchPositions(positions: Positions, equity: Equity, audit
         targets.set(tradeKey(identity), active);
         log("info", "position.exit_target_changed", fields);
       }
-      if (!isFresh(observed, 15_000) || signal.aborted || !canExit(policy, { price, at })) continue;
+      if (!isFresh(observed, 15_000) || signal.aborted) continue;
+      const proposed = await mode?.exitSignal(identity,policy.mode==="stop_loss");
+      const timedByStrategy = proposed?.exit === true;
+      if (proposed?.allowed === false || (!timedByStrategy && !canExit(policy, { price, at }))) continue;
       if (live && !live.enabled()) continue;
       const decision = await executor(call, identity, { action:"exit",sizer:{status:"SIZED",size_usd:cost_cents/100,max_slippage_bps:0},
-        position:{entry_price:policy.entry_price,opened_at:Math.floor(policy.entry_at/1000),max_hold_sec:policy.max_hold_sec,
+        position:{entry_price:policy.entry_price,opened_at:Math.floor(policy.entry_at/1000),max_hold_sec:timedByStrategy ? 1 : policy.max_hold_sec,
           stop_loss_bps:policy.mode==="stop_loss"?policy.stop_loss_bps:10000,take_profit_bps:active},
         market:{quote_price:price,expected_slippage_bps:0,gas_usd:0,now:Math.floor(at/1000)} });
       await audit({ identity,stage:"executor",status:"ok",gaps:[],detail:decision });
       if (decision.status!=="FILLED" || !isFresh(observed,15000) || signal.aborted) continue;
       const proceeds = Math.round(cost_cents * price / policy.entry_price);
       if (!Number.isSafeInteger(proceeds)) throw new SystemError("Invalid simulated proceeds");
-      const exit_reason = price < policy.entry_price ? "stop" : at - policy.entry_at >= policy.max_hold_sec * 1000
+      const exit_reason = price < policy.entry_price ? "stop" : timedByStrategy || at - policy.entry_at >= policy.max_hold_sec * 1000
         ? "timeout" : "target";
       if (live) {
         if (await live.exit(position,price,await liveSlippage?.() ?? 0,exit_reason)) {
@@ -71,6 +75,7 @@ export async function watchPositions(positions: Positions, equity: Equity, audit
         close: { exit_at: at, exit_price: price, exit_reason, proceeds_cents: proceeds } });
       positions.close(position);
       equity.close(position, proceeds, at);
+      mode?.plane.noteClose(chain,proceeds-position.cost_cents);
       log("info", "position.closed", { ...fields, outcome: "paper_close", reason: exit_reason });
       targets.delete(tradeKey(identity));
       requestedExits.delete(tradeKey(identity));

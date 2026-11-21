@@ -14,6 +14,7 @@ export function reconA(call: CallAgent, identity: Handoff, data: z.input<typeof 
     ethereum: "eth",
     polygon: "polygon_pos",
     arbitrum: "arbitrum",
+    optimism: "optimism",
     base: "base",
     solana: "solana",
     bsc: "bsc",
@@ -62,6 +63,27 @@ export function reconA(call: CallAgent, identity: Handoff, data: z.input<typeof 
       ).tool,
     ],
     wire: (value) => wireSchema.parse(value).rows,
+    local: async () => {
+      const seen=new Set(input.seen);
+      const rows:Array<z.infer<typeof reconASchema>[number]>=[];
+      for (const action of selected) {
+        await action.tool.run();
+        const obs=action.observation();
+        if (!obs?.ok || !Array.isArray(obs.data)) {
+          rows.push({status:"ERROR",source:action.tool.name,reason:"source_unavailable"});
+          continue;
+        }
+        for (const row of obs.data) {
+          const skipped=seen.has(row.token) || row.age_sec<input.config.min_age_sec ||
+            row.age_sec>input.config.max_age_sec || row.liquidity_usd<input.config.min_liquidity_usd ||
+            row.vol_1h_usd<input.config.min_vol_1h_usd;
+          if (!skipped) seen.add(row.token);
+          rows.push({...row,chain,run_id:input.run_id,discovered_at:obs.fetched_at,
+            source_fetched_at:obs.fetched_at, skipped,reason:skipped?"filtered":row.trigger});
+        }
+      }
+      return rows;
+    },
     validate: (rows) => {
       const seen = new Set(input.seen);
       const expected = selected.flatMap((action) => {

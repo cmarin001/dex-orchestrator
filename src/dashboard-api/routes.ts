@@ -14,6 +14,7 @@ import { readJournal } from "../logging/logger.js";
 import type { JournalEvent } from "../logging/types.js";
 import { createControl, controlInputs } from "../control/service.js";
 import { ControlConflict } from "../control/commands.js";
+import { changes, reads, type Change } from "../control/phase3.js";
 import { bearerAuth } from "./auth.js";
 
 export const dashboardRoutes = new Set(["/health", "/equity", "/journal", "/live-view", "/live-view/stream", "/trades", "/risk-config"]);
@@ -128,6 +129,44 @@ export function createDashboardApi(options: { token: string; auditPath: string; 
       try {
         const result = await control.submit(name,body,options.actor ?? "operator");
         return c.json(result,result.state === "queued" ? 202 : 200);
+      } catch (error) {
+        if (error instanceof ControlConflict) return c.json({error:error.message},409);
+        throw error;
+      }
+    });
+  }
+  for (const name of reads) app.get("/api/v1/" + name, async c => c.json(await control.phase3.read(name)));
+  for (const name of ["providers","strategies"] as const) {
+    app.get("/api/v1/" + name + "/:id",async c=>{
+      const result=await control.phase3.read(name,c.req.param("id"));
+      const items="items" in result ? result.items : [];
+      const item=Array.isArray(items) ? items[0] : undefined;
+      return item ? c.json(item) : c.json({error:"not_found"},404);
+    });
+  }
+  const writes:Array<[string,Change]>=[
+    ["/mode","set_mode"],["/chain","set_chain_routing"],["/controls/chain","set_chain_routing"],["/budget","set_budget"],
+    ["/providers/:id/enable","enable_provider"],["/providers/:id/disable","disable_provider"],
+    ["/strategies/:id/enable","enable_strategy"],["/strategies/:id/disable","disable_strategy"],
+    ["/strategies/:id/params","update_strategy_params"],["/strategies/reload","reload_strategies"],
+    ["/controls/approve/:id","approve_signal"],["/controls/reject/:id","reject_signal"],
+  ];
+  for (const [path,action] of writes) {
+    app.post("/api/v1"+path,async c=>{
+      const text=await c.req.text();
+      let raw:unknown;
+      try {raw=text?JSON.parse(text):{};} catch {return c.json({error:"invalid_json"},400);}
+      if (!raw || typeof raw!=="object" || Array.isArray(raw)) return c.json({error:"invalid_control"},400);
+      const id=c.req.param("id");
+      let body={...raw,...(id ? {id} : {})};
+      if (["set_mode","set_chain_routing","set_budget"].includes(action) && !("config" in body)) {
+        const {request_id,reason,...config}=body as Record<string,unknown>;
+        body={request_id,...(action==="set_mode"?{reason}:{}),config} as typeof body;
+      }
+      if (!changes[action].schema.safeParse(body).success) return c.json({error:"invalid_control"},400);
+      try {
+        const result=await control.phase3.mutate(action,body,options.actor ?? "operator");
+        return c.json(result,result.state==="queued"?202:200);
       } catch (error) {
         if (error instanceof ControlConflict) return c.json({error:error.message},409);
         throw error;

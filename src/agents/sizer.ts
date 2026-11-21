@@ -42,6 +42,11 @@ export function sizer(call: CallAgent, identity: Handoff, data: SizerInput, cloc
     schema: sizerSchema,
     identity,
     data: input,
+    local: () => ({...identity,status:reason ? reason==="drawdown_circuit_breaker"?"HALTED":"REFUSED":"SIZED",
+      size_usd:reason?0:amount,size_tokens:!reason&&market.reference_price?amount/market.reference_price:null,
+      max_slippage_bps:config.max_slippage_bps,equity_at_decision:equity?.equity_usd ?? null,
+      equity_age_sec:age===null?null:Math.max(0,age),risk_pct_used:config.max_risk_pct_per_trade,
+      reason:reason ?? String(amount)}),
     validate: (result) => {
       if (
         !matchesIdentity(result, identity) ||

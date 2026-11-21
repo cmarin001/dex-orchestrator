@@ -22,6 +22,7 @@ export interface AgentRequest<Schema extends z.ZodType> {
   wire?: (value: unknown) => unknown;
   wireSchema?: z.ZodType;
   validate?: (output: z.infer<Schema>) => boolean;
+  local?: () => unknown | Promise<unknown>;
 }
 
 export type CallAgent = <Schema extends z.ZodType>(request: AgentRequest<Schema>) => Promise<z.infer<Schema>>;

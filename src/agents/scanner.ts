@@ -66,5 +66,25 @@ export const scanner = (call: CallAgent, identity: Handoff, data: ScannerInput) 
       const parsed = wireSchema.safeParse(value);
       return parsed.success ? parsed.data.rows : undefined;
     },
+    local: () => {
+      const config=scannerInputSchema.parse(data).config;
+      const classified=data.feed.map(row=>{
+        const reason=data.seen.includes(row.token)?"dedup":
+          row.age_sec<config.min_age_sec?"too_new":
+          row.liquidity_usd<config.min_liquidity_usd?"liquidity_below_min":
+          row.vol_1h_usd<config.min_vol_1h_usd?"volume_below_min":"";
+        return {row,reason};
+      });
+      const eligible=classified.filter(item=>!item.reason);
+      const ratio=(row:ScannerInput["feed"][number])=>row.liquidity_usd ? row.vol_1h_usd/row.liquidity_usd : 0;
+      eligible.sort((a,b)=>ratio(b.row)-ratio(a.row) || b.row.liquidity_usd-a.row.liquidity_usd);
+      const ranked=eligible.slice(0,config.top_n);
+      const skipped=classified.filter(item=>!ranked.includes(item));
+      const at=Math.floor(Date.now()/1000);
+      return [...ranked.map(({row},i)=>({...row,run_id:data.run_id,rank_score:i+1,reason:row.trigger,
+        skipped:false,discovered_at:at})),
+        ...skipped.map(({row,reason})=>({...row,run_id:data.run_id,rank_score:0,reason:reason||"outside_top_n",
+          skipped:true,discovered_at:at}))];
+    },
     validate: (rows) => identity.run_id === data.run_id && matchesFeed(rows, data, identity.run_id),
   });

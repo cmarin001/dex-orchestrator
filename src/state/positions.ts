@@ -10,6 +10,7 @@ export const positionSchema = z.strictObject({
   cost_cents: money.positive(),
   entry_price_usd: z.number().positive(),
   live_amount: positiveUnits.optional(),
+  strategy_id: z.string().min(1).optional(),
   exit_policy: exitPolicySchema.optional(),
 });
 export type Position = z.infer<typeof positionSchema>;

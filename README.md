@@ -13,9 +13,9 @@ npm run simulate
 cp .env.example .env
 ```
 
-Set `OPENAI_API_KEY` and a nonempty `WATCHLIST` in `.env`. Each watchlist element supplies `chain`, the base `token` address, and the liquidity-pool `pair` address. Supported chain identifiers are `ethereum`, `bsc`, `base`, `solana`, `polygon`, and `arbitrum`. Run `npm start` to start the control loop. Use Ctrl+C to stop. Use one process per audit journal. The startup path replays simulated fills from the journal, restoring committed position costs. Market marks refresh after restart.
+Set a nonempty `WATCHLIST` or enable discovery in `.env`. The default strategy mode makes zero model calls and needs no provider key. Base is enabled first. Each watchlist element supplies `chain`, the base `token` address, and the liquidity-pool `pair` address. Supported chain identifiers are `ethereum`, `bsc`, `base`, `solana`, `polygon`, `arbitrum`, and `optimism`. Run `npm start` to start the control loop. Use Ctrl+C to stop. Use one process per audit journal. The startup path replays simulated fills from the journal, restoring committed position costs. Market marks refresh after restart.
 
-Amounts and position limits use integer USD cents and basis points. Paper fills use an observed USD price and omit fees, slippage, routing, and settlement. The fixtures contain recorded public provider responses. Tests use those recordings, synthetic candidates, and mocked OpenAI calls. Live OpenAI access requires a model that supports Responses function calling and Structured Outputs.
+Amounts and position limits use integer USD cents and basis points. Paper fills use an observed USD price and omit fees, slippage, routing, and settlement. The fixtures contain recorded public provider responses. Tests use those recordings, synthetic candidates, and mocked OpenAI calls. Optional AI and hybrid modes use the configured Chat Completions providers with schema validation.
 
 [Prompt conformance and verification](docs/conformance.md) · [Architecture](docs/architecture.md) · [Schemas](docs/schemas.md) · [Runtime ADR](docs/adr/0001-runtime.md)
 
@@ -91,3 +91,15 @@ details and dashboard projections.
 Paper is the default. The Phase 2 signer runs inside the worker and uses
 a dedicated journal and wallet. See the [live execution runbook](docs/live-runbook.md)
 for chain order, configuration, constraints, and first-run checks.
+
+## Decision modes
+
+`OPERATING_MODE=strategies` is the default. Enable optional model providers
+using `MODEL_PROVIDERS` and provider-specific keys. Local Ollama is configured
+as `llama3.1:8b`. Configure provider order, fallback categories and health
+cooldown with `MODEL_PROVIDER_POLICY`, and model tiers in
+`config/models.json`. Confirm pricing and model availability for your
+configured provider account before enabling paid modes.
+
+[Control-plane ADR](docs/adr/0005-control-plane.md) ·
+[Strategy reference](docs/strategies.md) · [REST and MCP](docs/dashboard-api.md)

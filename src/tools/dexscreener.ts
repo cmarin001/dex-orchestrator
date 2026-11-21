@@ -31,7 +31,9 @@ const response = z.object({
     pairAddress: z.string(),
     baseToken: z.object({ address: z.string() }),
     priceUsd: z.string(),
-    volume: z.object({ h1: z.number().nonnegative().optional() }).optional(),
+    fdv: z.number().nonnegative().nullish(),
+    marketCap: z.number().nonnegative().nullish(),
+    volume: z.object({ h1: z.number().nonnegative().optional(), h24:z.number().nonnegative().optional() }).optional(),
     pairCreatedAt: z.number().nonnegative().optional(),
     liquidity: z.object({ usd: z.number().nonnegative() }),
   })).nullable(),
@@ -49,5 +51,5 @@ export async function dexScreener(target: Target, request: Fetch = fetch) {
     throw new CandidateError("DexScreener returned no matching priced pair");
   }
   return { price_usd: Number(result.priceUsd), liquidity_usd: result.liquidity.usd,
-    vol_1h_usd: result.volume?.h1, created_at_ms: result.pairCreatedAt };
+    vol_1h_usd: result.volume?.h1, vol_24h_usd:result.volume?.h24, market_cap_usd:result.marketCap ?? undefined, created_at_ms: result.pairCreatedAt };
 }

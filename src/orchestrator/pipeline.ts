@@ -16,6 +16,7 @@ import { sizePosition } from "../state/equity.js";
 import type { Equity } from "../state/equity.js";
 import type { Positions } from "../state/positions.js";
 import type { LiveExecution } from "../wallet/live.js";
+import type { ModeRuntime } from "../mode/runtime.js";
 import { failureKind, log } from "../logging/operational.js";
 import { CandidateError } from "./errors.js";
 
@@ -36,6 +37,7 @@ export interface Pipeline {
   rejectRecon?: (target: Merged["identity"]) => void;
   exitMode?: "profit_only" | "stop_loss";
   live?: LiveExecution;
+  mode?: ModeRuntime;
 }
 
 export async function runCandidate(input: Merged, dependencies: Pipeline, ranked?: ScannerRow): Promise<"paper_fill" | "live_fill" | "skipped"> {
@@ -93,6 +95,9 @@ export async function runCandidate(input: Merged, dependencies: Pipeline, ranked
     if (!(error instanceof CandidateError)) throw error;
     return skip("risk_not_clear");
   }
+  dependencies.mode?.observe(input);
+  const strategy = await dependencies.mode?.approve(input);
+  if (dependencies.mode && !strategy) return skip("strategy_or_chain_filter");
   const config = await dependencies.riskConfig?.() ?? defaultRisk;
   if (dependencies.equityMaxAgeMs && !equity.hasFreshMarks(positions.list(), now(), dependencies.equityMaxAgeMs)) {
     return skip("equity_marks_stale");
@@ -122,15 +127,16 @@ export async function runCandidate(input: Merged, dependencies: Pipeline, ranked
   const capacity = equity.entryCapacityCents(positions.committedCents, config.halt_new_entries_dd);
   if (!capacity) return skip("portfolio_loss_budget_exhausted");
   const budget = riskBudget(config, equity.drawdown_pct, currentEquity, scan.liquidity_usd);
-  const costCents = sizePosition(Math.floor(Math.min(proposal.size_usd, availableCents / 100) * 100), currentEquity, Math.min(capacity, budget, dependencies.live?.perTradeCents ?? Infinity), maxPositionBps);
+  const costCents = sizePosition(Math.floor(Math.min(proposal.size_usd * (strategy?.sizeFactor ?? 1), availableCents / 100) * 100), currentEquity, Math.min(capacity, budget, dependencies.mode?.cap(identity,equity,positions) ?? Infinity, dependencies.live?.perTradeCents ?? Infinity), maxPositionBps);
   await record("sizer", { proposal, approved_cents: costCents, portfolio_capacity_cents: capacity });
   if (costCents === 0) return skip("zero_size");
 
   const exitBase = { entry_price: quote.value, entry_at: now(), min_profit_bps_for_exit: 25,
     timeout_ladder: config.timeout_ladder, max_hold_sec: 3600 };
-  const exit_policy: ExitPolicy = dependencies.exitMode === "stop_loss"
+  const basePolicy: ExitPolicy = dependencies.exitMode === "stop_loss"
     ? { ...exitBase, mode: "stop_loss", stop_loss_bps: 100 }
     : { ...exitBase, mode: "profit_only" };
+  const exit_policy = dependencies.mode?.policy(basePolicy,strategy ?? null) ?? basePolicy;
   const recommendation = await executor(call, identity, { action: "entry", position: null,
     sizer: { status: proposal.status, size_usd: costCents / 100, max_slippage_bps: config.max_slippage_bps },
     market: { quote_price: quote.value, expected_slippage_bps: input.expected_slippage_bps, gas_usd: 0, now: Math.floor(now() / 1000) } });
@@ -147,17 +153,20 @@ export async function runCandidate(input: Merged, dependencies: Pipeline, ranked
   const remaining = equity.entryCapacityCents(positions.committedCents, latest.halt_new_entries_dd);
   const latestBudget = riskBudget(latest, equity.drawdown_pct, equity.markedCapitalCents, scan.liquidity_usd);
   if (positions.get(identity) || positions.count >= maxOpenPositions ||
-      sizePosition(costCents, equity.markedCapitalCents, Math.min(remaining, latestBudget), maxPositionBps) < costCents) {
+      sizePosition(costCents, equity.markedCapitalCents, Math.min(remaining,latestBudget,dependencies.mode?.cap(identity,equity,positions) ?? Infinity), maxPositionBps) < costCents) {
     return skip("entry_limit_changed");
   }
   if (!fresh() || signal?.aborted) return skip("expired_before_fill");
+  if (dependencies.mode && strategy && !await dependencies.mode.authorize(input,strategy)) return skip("awaiting_strategy_or_approval");
+  if (!fresh() || signal?.aborted) return skip("expired_before_fill");
 
   const position = { ...identity, cost_cents: costCents, entry_price_usd: quote.value,
-    ...(dependencies.exitMode ? { exit_policy: { ...exit_policy, entry_at: now() } } : {}) };
+    ...(strategy?.signal ? { strategy_id:strategy.signal.strategyId } : {}),
+    ...(dependencies.exitMode || dependencies.mode ? { exit_policy: { ...exit_policy, entry_at: now() } } : {}) };
   let outcome: "live_fill" | "paper_fill" | "skipped";
   if (dependencies.live) {
     const confirmed = await dependencies.live.enter(identity,costCents,quote.value,
-      Math.min(latest.max_slippage_bps,config.max_slippage_bps),exit_policy,expires_at!);
+      Math.min(latest.max_slippage_bps,config.max_slippage_bps),exit_policy,expires_at!,strategy?.signal?.strategyId);
     outcome = confirmed ? "live_fill" : await skip("live_entry_unconfirmed");
   } else {
     await audit({ identity, stage: "executor", status: "paper_fill", gaps: [], position });

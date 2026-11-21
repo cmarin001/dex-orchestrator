@@ -1,0 +1,7 @@
+{
+  "openai": {
+    "scanner": "gpt-4o-mini",
+    "rug-check": "gpt-4o",
+    "logger": "gpt-4o-mini"
+  }
+}

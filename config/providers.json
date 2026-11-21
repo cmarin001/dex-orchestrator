@@ -1,0 +1,30 @@
+{
+  "local": {
+    "enabled": false,
+    "baseUrl": "http://localhost:11434/v1",
+    "model": "llama3.1:8b",
+    "capabilities": {"structuredOutputs":false,"tools":true,"maxContextTokens":8192,"costPerMTokIn":0,"costPerMTokOut":0,"cacheDiscount":0}
+  },
+  "deepseek": {
+    "enabled": false,
+    "baseUrl": "https://api.deepseek.com/v1",
+    "model": "deepseek-chat",
+    "apiKeyEnv": "DEEPSEEK_API_KEY",
+    "capabilities": {"structuredOutputs":false,"tools":true,"maxContextTokens":64000,"costPerMTokIn":1,"costPerMTokOut":3,"cacheDiscount":0.1}
+  },
+  "grok": {
+    "enabled": false,
+    "baseUrl": "https://api.x.ai/v1",
+    "model": "grok-2-latest",
+    "apiKeyEnv": "XAI_API_KEY",
+    "capabilities": {"structuredOutputs":true,"tools":true,"maxContextTokens":64000,"costPerMTokIn":5,"costPerMTokOut":20,"cacheDiscount":0.5}
+  },
+  "openai": {
+    "enabled": false,
+    "baseUrl": "https://api.openai.com/v1",
+    "model": "gpt-4o-mini",
+    "outputTokenField": "max_completion_tokens",
+    "apiKeyEnv": "OPENAI_API_KEY",
+    "capabilities": {"structuredOutputs":true,"tools":true,"maxContextTokens":64000,"costPerMTokIn":5,"costPerMTokOut":20,"cacheDiscount":0.5}
+  }
+}

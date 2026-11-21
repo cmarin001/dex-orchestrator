@@ -22,7 +22,7 @@ const walletNotSent = new Set(["INTENT_EXPIRED","PER_TRADE_LIMIT_EXCEEDED","DAIL
   "UNRECONCILED_TRANSACTION","LIVE_EXECUTION_DISABLED","UNAPPROVED_PROGRAM","SIMULATION_TOKEN_MISMATCH","RPC_CHAIN_MISMATCH"]);
 
 type Settings = {stable:string; stableDecimals:number; usdPerUnit:number; decimals:Map<string,number>};
-type Shared = {enabled: () => boolean; config:WalletConfig; signer:Signer; audit:Audit; journal:JournalEvent[]; positions:Positions; equity:Equity} & Settings;
+type Shared = {onClose?: (chain:string,pnl:number)=>void; enabled: () => boolean; config:WalletConfig; signer:Signer; audit:Audit; journal:JournalEvent[]; positions:Positions; equity:Equity} & Settings;
 
 export function createLiveExecution(settings: Shared) {
   const {config,signer,audit,positions,equity,stable,stableDecimals,usdPerUnit,decimals} = settings;
@@ -80,6 +80,7 @@ export function createLiveExecution(settings: Shared) {
         close:{exit_at:at,exit_price,exit_reason:order.reason!,proceeds_cents:proceeds}});
       positions.close(position);
       equity.close(position,proceeds,at);
+      settings.onClose?.(position.chain,proceeds-position.cost_cents);
     }
     pending.delete(intent.run_id);
     return true;
@@ -115,7 +116,7 @@ export function createLiveExecution(settings: Shared) {
     async reconcile() {
       return serialize(async()=>{ for (const order of pending.values()) await execute(order,true); });
     },
-    enter(identity:Handoff, cost_cents:number, price:number, slippageBps:number, exit_policy:ExitPolicy, expiresAt = Date.now()+60_000) {
+    enter(identity:Handoff, cost_cents:number, price:number, slippageBps:number, exit_policy:ExitPolicy, expiresAt = Date.now()+60_000, strategyId?:string) {
       return serialize(async()=> {
         if (identity.chain !== config.chain || positions.get(identity) || identity.token === stable) return false;
         const settlement = units(cost_cents/100/usdPerUnit,stableDecimals,Math.floor);
@@ -125,7 +126,7 @@ export function createLiveExecution(settings: Shared) {
         const walletRun = { ...identity, run_id: hash.slice(0,8)+"-"+hash.slice(8,12)+"-4"+hash.slice(13,16)+"-8"+hash.slice(17,20)+"-"+hash.slice(20,32) };
         const tx = { ...intent(walletRun,cost_cents,stable,identity.token,settlement,minimum),
           deadline_sec:Math.min(Math.floor(expiresAt/1000),Math.floor(Date.now()/1000)+60) };
-        return submit({identity:walletRun,intent:tx,source_run_id:identity.run_id,action:"entry",position:{...identity,cost_cents:Math.round(actualSettlementUnits*100),entry_price_usd:price,exit_policy}});
+        return submit({identity:walletRun,intent:tx,source_run_id:identity.run_id,action:"entry",position:{...identity,cost_cents:Math.round(actualSettlementUnits*100),entry_price_usd:price,exit_policy,...(strategyId ? {strategy_id:strategyId} : {})}});
       });
     },
     exit(position:Position, price:number, slippageBps:number, reason:"target"|"stop"|"timeout") {

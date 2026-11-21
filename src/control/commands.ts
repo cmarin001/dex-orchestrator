@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { addressMatches, chainSchema, handoff, normalizeAddress } from "../../schemas/common.js";
 import { riskConfigSchema } from "../../schemas/risk-config.js";
+import { phase3Command } from "../../schemas/control-plane.js";
 
 export const empty = z.strictObject({});
 export const requestKey = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
@@ -20,6 +21,7 @@ export const exitInput = z.strictObject({ ...key, run_id: z.string().min(1).opti
 const address = z.strictObject(tokenFields).refine(v => addressMatches(v.chain, v.token))
   .transform(v => ({ ...v, token: normalizeAddress(v.chain, v.token) }));
 const action = z.discriminatedUnion("type", [
+  z.strictObject({type:z.literal("phase3"),command:phase3Command}),
   z.strictObject({type:z.literal("pause")}), z.strictObject({type:z.literal("resume")}),
   z.strictObject({type:z.literal("live-execution"),enabled:z.boolean()}),
   z.strictObject({type:z.literal("risk"), config:riskConfigSchema}),

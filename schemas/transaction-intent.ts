@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { chainSchema } from "./common.js";
 
-export const walletChainSchema = z.union([chainSchema, z.enum(["optimism", "bitcoin"])]);
+export const walletChainSchema = z.union([chainSchema, z.literal("bitcoin")]);
 const units = z.string().regex(/^(0|[1-9][0-9]{0,77})$/);
 export const positiveUnits = units.refine(value => value !== "0");
 export const routeHintSchema = z.enum(["0x", "jupiter", "native"]);

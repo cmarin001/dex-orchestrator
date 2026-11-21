@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-export const chainSchema = z.enum(["ethereum", "bsc", "base", "solana", "polygon", "arbitrum"]);
+export const chainSchema = z.enum(["ethereum", "bsc", "base", "solana", "polygon", "arbitrum", "optimism"]);
 export type Chain = z.infer<typeof chainSchema>;
 
 export const addressMatches = (chain: Chain, value: string): boolean =>

@@ -33,6 +33,10 @@ export function executor(call: CallAgent, identity: Handoff, data: ExecutorInput
     schema: executorSchema,
     identity,
     data: input,
+    local: () => ({...identity, action:input.action,status:reason?
+      reason==="slippage_above_max"?"ABORTED":"SKIPPED":"FILLED",
+      fill_price:reason?null:market.quote_price,size_usd:reason?null:sizer.size_usd,
+      gas_usd:market.gas_usd,slippage_bps:market.expected_slippage_bps,tx_hash:"sim",reason:reason ?? "approved"}),
     validate: (out) =>
       matchesIdentity(out, identity) &&
       out.action === input.action &&

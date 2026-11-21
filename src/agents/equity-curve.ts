@@ -21,6 +21,8 @@ export function equityCurve(call: CallAgent, identity: Handoff, data: EquityCurv
     schema: equityCurveSchema,
     identity,
     data,
+    local: () => ({equity_usd:balance,drawdown_pct:peak?(peak-balance)/peak:0,trades_closed:count,
+      win_rate:count?wins/count:0,expectancy_usd:count?(balance-data.starting_equity_usd)/count:0,as_of:start}),
     validate: (out) =>
       out.as_of >= start &&
       out.as_of <= Math.floor(clock() / 1000) &&
