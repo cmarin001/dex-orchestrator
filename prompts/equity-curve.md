@@ -23,7 +23,7 @@ OUTPUT (one object, no prose):
   "expectancy_usd":n, "trades_closed":n, "as_of":ts }
 
 RULES:
-- Deterministic. Same inputs → same output.
+- For identical inputs, all output fields except `as_of` are deterministic.
 - If closed_trades is empty → equity = starting_equity, drawdown=0,
   win_rate=0, expectancy=0, trades_closed=0.
 - You are the ONLY writer of `current_equity`. Nobody else changes it.

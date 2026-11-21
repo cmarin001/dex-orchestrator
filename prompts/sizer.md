@@ -27,7 +27,7 @@ BEHAVIOR — steps in order:
    min(1, 20 / volatility_pct). (Volatile → smaller.)
 8. size_usd = min(base_risk_after_haircut, max_by_depth) - gas_usd.
    If size_usd ≤ 0 → status "REFUSED", reason "size_below_gas".
-9. size_tokens = size_usd / reference_price (if provided; else omit).
+9. size_tokens = size_usd / reference_price (if provided; else set size_tokens to null).
 10. max_slippage_bps = config.max_slippage_bps.
 
 OUTPUT (one object, no prose):
