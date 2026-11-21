@@ -7,7 +7,6 @@ import { Keypair, SystemProgram, TransactionMessage, VersionedTransaction } from
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 import { bytesToHex, recoverTransactionAddress } from "viem";
 import type { TransactionSerializedLegacy } from "viem";
-import { POST as postPaper } from "../../api/paper.js";
 import type { Handoff } from "../../schemas/common.js";
 import type { ScannerInput } from "../../schemas/scanner.js";
 import { scanner } from "../../src/agents/scanner.js";
@@ -192,30 +191,6 @@ test("skips a cache miss without agent calls and rejects ambiguous security befo
   assert.deepEqual(events.at(-1)?.gaps, ["critical_source_conflict"]);
 });
 
-test("the Vercel paper endpoint skips an empty snapshot without network access", async t => {
-  const { chain, token, pair } = identity;
-  const env = { PAPER_RUN_SECRET: "fixture-secret", OPENAI_API_KEY: "test-key", PAPER_RUN_TARGET: JSON.stringify({ chain, token, pair }) };
-  const previous = Object.fromEntries(Object.keys(env).map(key => [key, process.env[key]]));
-  Object.assign(process.env, env);
-  t.after(() => {
-    for (const [key, value] of Object.entries(previous)) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  });
-  const fetch = t.mock.method(globalThis, "fetch", async () => { throw new Error("Unexpected network access"); });
-  const post = (body?: string) => postPaper(new Request("https://example.test/api/paper", {
-    method: "POST", headers: { authorization: "Bearer fixture-secret" }, body,
-  }));
-  const empty = await post();
-  assert.equal(empty.status, 200);
-  const result = await empty.json() as { outcome: string; events: AuditEvent[] };
-  assert.equal(result.outcome, "skipped");
-  assert.deepEqual(result.events.map(event => event.gaps), [["stale_recon"], ["stale_recon"]]);
-  assert.equal((await post(JSON.stringify({ recon_snapshot: { target: { chain } } }))).status, 400);
-  assert.equal(fetch.mock.callCount(), 0);
-});
-
 test("a tightened portfolio limit while Executor runs prevents the paper fill", async () => {
   const { defaultRisk } = await import("../../schemas/risk-config.js");
   let limit = .15;
@@ -231,22 +206,4 @@ test("a tightened portfolio limit while Executor runs prevents the paper fill", 
   assert.equal(positions.count, 0);
   assert.deepEqual(events.at(-1)?.gaps, ["entry_limit_changed"]);
   assert.ok(events.every(event => event.status !== "paper_fill"));
-});
-
-test("authenticated Vercel paper POST runs a fresh snapshot through the real agent contracts",async t=>{
-  const {chain,token,pair}=identity;
-  const keys={OPENAI_API_KEY:"test",PAPER_RUN_SECRET:"paper-test",PAPER_RUN_TARGET:JSON.stringify({chain,token,pair})};
-  const previous=Object.fromEntries(Object.keys(keys).map(key=>[key,process.env[key]]));
-  Object.assign(process.env,keys);
-  t.after(()=>{for(const [key,value] of Object.entries(previous)) {
-    if(value===undefined) delete process.env[key];else process.env[key]=value;
-  }});
-  t.mock.method(globalThis,"fetch",paperTransport);
-  const response=await postPaper(new Request("https://example.test/api/paper",{method:"POST",
-    headers:{authorization:"Bearer paper-test"},body:JSON.stringify({recon_snapshot:observation()})}));
-  assert.equal(response.status,200);
-  const report=await response.json() as {outcome:string;events:AuditEvent[]};
-  assert.equal(report.outcome,"paper_fill");
-  assert.equal(report.events.find(e=>e.stage==="logger")?.status,"ok");
-  assert.equal(report.events.at(-1)?.stage,"equity-curve");
 });

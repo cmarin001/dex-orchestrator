@@ -25,7 +25,7 @@ export class ReconCache {
     return merge(identity, entry?.snapshot, entry?.watched ? WATCHED_TTL_MS : NEW_TTL_MS, now);
   }
 
-  reject(target: Target) {
+  reject(target: Pick<Target,"chain"|"token">) {
     const key = reconKey(target);
     this.rejected.add(key);
     const entry = this.entries.get(key);

@@ -13,11 +13,11 @@ import type { Positions } from "../state/positions.js";
 import { dexScreener } from "../tools/dexscreener.js";
 import { activeTarget, canExit } from "./policy.js";
 
-export async function watchPositions(positions: Positions, equity: Equity, audit: Audit, signal: AbortSignal, call: CallAgent, refreshMs = 5000) {
+export async function watchPositions(positions: Positions, equity: Equity, audit: Audit, signal: AbortSignal, call: CallAgent, refreshMs = 5000, requestedExits = new Set<string>()) {
   log("info", "watcher.started");
   const targets = new Map<string, number>();
   while (!signal.aborted) {
-    for (const position of positions.list()) {
+    for (const position of positions.list().sort((a,b) => Number(requestedExits.has(tradeKey(b))) - Number(requestedExits.has(tradeKey(a))))) {
       const { exit_policy: policy, run_id, chain, token, pair, cost_cents } = position;
       if (!policy || signal.aborted) continue;
       const identity = { run_id, chain, token, pair };
@@ -63,6 +63,7 @@ export async function watchPositions(positions: Positions, equity: Equity, audit
       equity.close(position, proceeds, at);
       log("info", "position.closed", { ...fields, outcome: "paper_close", reason: exit_reason });
       targets.delete(tradeKey(identity));
+      requestedExits.delete(tradeKey(identity));
       const projection = await equityCurve(call,identity,{starting_equity_usd:equity.initialCents/100,closed_trades:equity.closedTrades(),
         as_of:Math.floor(Date.now()/1000)});
       await audit({identity,stage:"equity-curve",status:"ok",detail:projection,gaps:[]});

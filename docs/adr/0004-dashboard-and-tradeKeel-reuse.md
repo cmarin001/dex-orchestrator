@@ -1,8 +1,7 @@
 # 0004 Add a TradeKeel paper desk backed by the audit journal
 
 The dashboard reads market discovery, fills, equity, and open-position
-projections. It has no model credentials or signing boundary. Risk settings
-are the sole write operation. Each validated change appends an attributed,
+projections. It has no model credentials or signing boundary. Operator controls are submitted as requests. Each validated change appends an attributed,
 dated revision. Sizing loads the most recent revision and fails closed when
 it is stale. An operator can inspect earlier rows or restore one by appending
 it again.
@@ -22,11 +21,8 @@ on the TradeKeel repository or Grok runtime. The orchestrator uses the
 OpenAI Responses API specified in ADR 0001.
 
 The frontend and worker deploy independently. The dashboard API v1 wire format
-is the boundary between them. Hono provides a Web Request/Response interface usable on both the Node worker
-host and a Vercel Function. The local worker owns a durable JSONL journal.
-The Vercel dashboard reads an HTTPS worker API or a read-only JSONL export.
-Persistent hosting and export credentials are provided by the operator.
-The Vercel one-shot runner returns ephemeral audit events to its caller.
+is the boundary between them. A separate Hono process serves the journal
+and submits commands to the local inbox. The worker owns portfolio writes.
 
 The live chart uses bounded SSE connections with browser fetch, which allows
 a bearer header. The browser reconnects after a bounded stream completes.

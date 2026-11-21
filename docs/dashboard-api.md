@@ -1,39 +1,50 @@
-# Dashboard API v1
+# Dashboard REST and MCP
 
-The [standalone frontend](https://github.com/cmarin001/dex-orchestrator-app)
-uses the JSON and SSE API below. Provider credentials, signing, and journal
-writes stay on the worker. A validated risk revision is the API's only write.
+Run `npm run dashboard:api` separately from `npm start`. REST defaults to
+127.0.0.1:8787. HTTP MCP defaults to 127.0.0.1:8788 at /mcp. Use
+`Authorization: Bearer <DASHBOARD_API_TOKEN>` for both. The allowlisted
+`DASHBOARD_ORIGIN` can send REST preflights. HTTP MCP accepts native clients
+with an allowlisted Host and rejects requests carrying an Origin header.
+Stdio uses the local process's filesystem permissions.
 
-## Run the backend
-
-Set `DASHBOARD_API_TOKEN` in the backend environment. Start `npm start` for
-the worker and `npm run dashboard:api` for Hono. Both processes need the
-same `AUDIT_PATH`, `RISK_CONFIG_PATH`, and `INITIAL_EQUITY_CENTS`. The worker
-continues independently of frontend availability.
-
-For direct browser connections, set `DASHBOARD_ORIGIN` to the frontend's
-exact origin, including scheme and hostname. Requests require
-`Authorization: Bearer <DASHBOARD_API_TOKEN>`. The approved browser origin
-may use OPTIONS for CORS preflight without posting credentials.
-
-The existing Vercel Function at `/api/dashboard-data` accepts an
-`endpoint` query parameter containing the path listed below. It can proxy
-an HTTPS worker at `DASHBOARD_WORKER_API_URL` or read a JSONL export at
-`DASHBOARD_JOURNAL_URL` using `DASHBOARD_JOURNAL_READ_TOKEN` when required.
-Risk writes require the worker API. The one-shot `/api/paper` endpoint
-keeps an independent, per-request state.
-
-| Method | Path | Response |
+| REST under /api/v1 | MCP tool | Response |
 | --- | --- | --- |
-| GET | `/health` | Status and mode |
-| GET | `/equity` | Current equity, realized P&L, committed cents, and position count |
-| GET | `/journal` | Audit events with optional date and run filters |
-| GET | `/live-view` | Open-position snapshots, optionally filtered by token |
-| GET | `/live-view/stream` | SSE `live-view` events with snapshot arrays |
-| GET | `/trades` | Closed trades, filters, and cursor pagination |
-| GET | `/risk-config` | Risk configuration, revision, and editability |
-| POST | `/risk-config` | Appends and returns a validated risk revision |
+| GET /health | | API process and readable journal |
+| GET /status | get_status | Last recorded worker state and cycle, breaker, pause, positions and published equity |
+| GET /positions | list_positions | Open positions, entry price, size, age, nullable mark and unrealized P&L |
+| GET /equity | get_equity | Latest publication and up to 50 recent publications |
+| GET /audit | get_recent_audit | Newest-first events. Optional limit (1–200), ISO `since` and `cursor` from `next_cursor` |
+| GET /candidates | get_candidates | Most recent Scanner batch and the last cycle's watched targets |
+| GET /risk | get_risk | Current risk config and revision metadata |
+| POST /controls/pause | pause_entries | Queue an entry pause |
+| POST /controls/resume | resume_entries | Queue a resume subject to normal checks |
+| POST /controls/risk | update_risk | Queue `{ "config": { … } }` against the existing risk schema |
+| POST /controls/exit | request_exit | Queue `{ "run_id": "…" }` or `{ "chain": "…", "token": "…" }` |
+| POST /controls/reject | reject_token | Queue `{ "chain": "…", "token": "…" }` for permanent entry rejection |
 
-The live-view, risk configuration, and history models are in
-[`schemas/`](../schemas). Keep the frontend's v1 wire types compatible
-when evolving those payloads.
+MCP also exposes the read-only `audit://journal` resource. The existing
+unversioned live-view SSE and trade history routes remain available to the
+standalone frontend.
+Point the frontend at the VPS API origin. After submitting a risk revision,
+refresh the current risk view once the worker applies the queued request.
+
+Controls return a receipt with `request_id`, authenticated service actor,
+normalized action and state. A queued REST request returns 202. Resubmit
+the same request with its `request_id` to retrieve its latest receipt.
+Conflicting reuse returns 409. Set `DASHBOARD_OPERATOR` to name the
+shared credential's operator. Stdio uses the same configured name.
+
+The services share a durable file inbox. Only the worker applies commands,
+at the start of its next cycle. It records outcomes in the audit journal,
+appends risk revisions and restores pause state and permanent rejections on
+replay. Entries stay paused while the exit watcher continues. Exit requests
+prioritize a specific position for evaluation with a fresh quote and its
+existing exit policy. A request can remain pending until the policy permits
+a close. A run ID shared by multiple open positions returns 409. A token
+rejection prevents future entries for that chain and token.
+
+Status reports the last recorded loop state. After an abrupt kill, use the
+cycle timestamp to assess freshness and systemd to check actual liveness.
+A queued command can wait through a slow cycle or breaker cooldown. Local
+tests exercise fixture journals and mock trading providers. Remote HTTPS,
+desktop client setup and a live droplet are deployment checks.

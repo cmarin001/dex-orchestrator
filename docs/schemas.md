@@ -16,7 +16,7 @@ yields null token size. The worker applies cash and exposure caps in cents
 before invoking Executor. Logger preserves the hop object and reports missing
 fields. Equity Curve publishes performance from closed trades.
 
-The authenticated Vercel paper request accepts `{ "recon_snapshot": ... }`.
+The worker merges provider observations into a Recon snapshot.
 See `schemas/recon-snapshot.ts` for the normalized source records. Its
 timestamps use milliseconds, while agent timestamps use Unix seconds.
 The optional `expected_slippage_bps` field drives the paper execution guard.

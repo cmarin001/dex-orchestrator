@@ -10,6 +10,7 @@ import { CandidateError, SystemError } from "./errors.js";
 import type { DiscoveryScope } from "../tools/discovery.js";
 import { runCandidate, scannerLimits } from "./pipeline.js";
 import type { Pipeline } from "./pipeline.js";
+import type { WorkerControls } from "../control/worker.js";
 
 export interface LoopOptions {
   targets: readonly Target[];
@@ -25,6 +26,7 @@ export async function runLoop(
   pipeline: Pipeline,
   signal: AbortSignal,
   cache: ReconCache,
+  controls?: WorkerControls,
 ): Promise<void> {
   const seen = new Map<string, number>();
   let failures = 0;
@@ -33,6 +35,8 @@ export async function runLoop(
     const cycleStarted = startTimer();
     const started = Date.now();
     let delay = options.intervalMs;
+    let breakerUntil: number | null = null;
+    await controls?.drain(pipeline.positions);
     const targets = cache.list();
     const run_id = randomUUID();
     const snapshots = new Map<string, ReturnType<ReconCache["read"]>>();
@@ -67,6 +71,7 @@ export async function runLoop(
           { run_id, feed, seen: [...seen.keys()], config: scannerLimits },
         );
         ranking = new Map(rows.map((row) => [targetKey(row), row]));
+        if (controls) await pipeline.audit({stage:"scanner_batch",status:"ok",gaps:[],detail:rows});
       } catch (error) {
         rankingError = error;
       }
@@ -99,6 +104,7 @@ export async function runLoop(
           });
           if (rankingError && !merged.stale) throw rankingError;
           const row = ranking?.get(targetKey(identity));
+          if (controls?.paused) return;
           const outcome = await runCandidate(
             merged,
             { ...pipeline, signal, rejectRecon: (target) => cache.reject(target) },
@@ -133,10 +139,13 @@ export async function runLoop(
             detail: { cooldown_ms: options.breakerCooldownMs, failures },
           });
           delay = Math.max(delay, Date.now() - started + options.breakerCooldownMs);
+          breakerUntil = Date.now() + options.breakerCooldownMs;
           break;
         }
       }
     }
+    if (controls) await pipeline.audit({stage:"worker_cycle",status:"ok",gaps:[],
+      detail:{watched:targets,breaker_until:breakerUntil}});
     log("debug", "loop.cycle", { count: targets.length, duration_ms: elapsed(cycleStarted) });
     await sleep(Math.max(0, delay - (Date.now() - started)), undefined, { signal }).catch((error: unknown) => {
       if (!signal.aborted) throw error;

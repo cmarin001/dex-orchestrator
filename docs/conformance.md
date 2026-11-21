@@ -16,7 +16,7 @@ and Logger use their original wording. All agents load their named prompt.
 | Logger | Single/batch envelopes, one row per hop, exact object preservation, per-agent gaps, current row timestamps and malformed marker | `src/agents/logger.ts:22`, `src/logging/logger.ts` |
 | Equity Curve | Chronologically ordered close arithmetic, peak drawdown, expectancy, wins, empty history, agent publication time and Sizer handoff | `src/agents/equity-curve.ts:6`, `src/orchestrator/pipeline.ts:39`, `src/dashboard-api/routes.ts` |
 
-## Test results
+## Contract revision test results
 
 Node 20.20.2 ran the build, complete suite and standalone simulation.
 Each agent has a focused unit file in `tests/unit/`. The simulation in
@@ -46,8 +46,7 @@ expects $1,006 equity, two closes and a 0.5 win rate.
 
 - **Live integrations.** Tests use mocked Responses replies and HTTP fixtures.
   They cannot establish live model compliance, provider quotas, credential
-  access, hosted Vercel behavior or network latency. A local authenticated
-  Vercel POST covers both a fresh fill and an empty snapshot.
+  access or network latency. The table above records verification at the original contract revision.
 - **Security coverage.** Provider evidence is limited to identifiable source
   fields. Etherscan creation metadata alone cannot establish a deployer's
   previous rugs. That value stays null. A missing critical flag prevents entry.
@@ -62,7 +61,7 @@ expects $1,006 equity, two closes and a 0.5 win rate.
   equivalence of every statement in the text.
 - **Paper assumptions.** The worker uses reported price and defaults to zero
   gas and expected slippage. A paper snapshot may supply expected slippage.
-  The preview has an isolated portfolio per request. Permanent rejection
+  Permanent rejection
   across restarts requires the continuous worker's persistent journal.
   The offline simulation provides no evidence about real fills or P&L.
 - **Coverage boundaries.** Mocked replay verifies application behavior with
