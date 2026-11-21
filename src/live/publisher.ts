@@ -1,3 +1,4 @@
+import { tradeKey } from "../../schemas/common.js";
 import type { ExitPolicy } from "../../schemas/exit-policy.js";
 import { chartPointSchema } from "../../schemas/live-view.js";
 import type { LiveView, PositionMark } from "../../schemas/live-view.js";
@@ -28,13 +29,13 @@ export function liveViews(events: readonly JournalEvent[], now = Date.now()): Li
           size_usd: position.cost_cents / 100, tx_hash: null });
         fills.set(key, marks);
       }
-      if (event.status === "paper_close") open.delete(run_id);
-      else if (policy) open.set(run_id, { chain, token, pair, policy, entry_at: policy.entry_at,
+      if (event.status === "paper_close") open.delete(tradeKey(position));
+      else if (policy) open.set(tradeKey(position), { chain, token, pair, policy, entry_at: policy.entry_at,
         entry_price: policy.entry_price, active_target_bps: activeTarget(policy, now), marks, series: [],
         current_mark: null, ...exitLine(policy, now), as_of: now });
     }
     if (event.stage !== "position_mark" || !event.identity) continue;
-    const view = open.get(event.identity.run_id);
+    const view = open.get(tradeKey(event.identity));
     const point = chartPointSchema.safeParse(event.detail);
     if (!view || !point.success || point.data.t > now) continue;
     if (point.data.t > now - 3_600_000) {

@@ -8,9 +8,10 @@
   },
   "scripts": {
     "build": "tsc --noEmit",
-    "test": "tsx --test tests/unit/*.test.ts tests/integration/*.test.ts",
+    "test": "node --import tsx --test tests/unit/*.test.ts tests/integration/*.test.ts",
     "start": "node --env-file-if-exists=.env --import tsx src/index.ts",
-    "dashboard:api": "node --env-file-if-exists=.env --import tsx src/dashboard-api/server.ts"
+    "dashboard:api": "node --env-file-if-exists=.env --import tsx src/dashboard-api/server.ts",
+    "simulate": "node --import tsx --test tests/integration/simulation.test.ts"
   },
   "dependencies": {
     "@hono/node-server": "2.1.9",

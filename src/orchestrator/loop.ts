@@ -1,107 +1,137 @@
+import { scanner } from "../agents/scanner.js";
+import { targetKey } from "../cache/merge.js";
+import type { ScannerRow } from "../../schemas/scanner.js";
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { Target } from "../../schemas/common.js";
-import { reconA } from "../agents/recon-a.js";
-import { reconB } from "../agents/recon-b.js";
-import { reconC } from "../agents/recon-c.js";
-import { merge, targetKey } from "../cache/merge.js";
-import type { Freshness, Market, Security } from "../cache/merge.js";
-import { TtlCache } from "../cache/ttl.js";
+import type { ReconCache } from "../cache/recon-cache.js";
 import { elapsed, failureKind, log, startTimer, withLogContext } from "../logging/operational.js";
 import { CandidateError, SystemError } from "./errors.js";
-import { discover } from "../tools/discovery.js";
 import type { DiscoveryScope } from "../tools/discovery.js";
-import { runCandidate } from "./pipeline.js";
+import { runCandidate, scannerLimits } from "./pipeline.js";
 import type { Pipeline } from "./pipeline.js";
 
 export interface LoopOptions {
   targets: readonly Target[];
-  ttl: Freshness;
   intervalMs: number;
   breakerFailures: number;
   breakerCooldownMs: number;
-  socialEnabled: boolean;
   discovery?: DiscoveryScope;
   goPlusAccessToken?: string;
 }
 
-export async function runLoop(options: LoopOptions, pipeline: Pipeline, signal: AbortSignal): Promise<void> {
-  const marketCache = new TtlCache<Market["value"]>(options.ttl.marketMs);
-  const securityCache = new TtlCache<Security["value"]>(options.ttl.securityMs);
+export async function runLoop(
+  options: LoopOptions,
+  pipeline: Pipeline,
+  signal: AbortSignal,
+  cache: ReconCache,
+): Promise<void> {
+  const seen = new Map<string, number>();
   let failures = 0;
-  let discoveryBaseline: Awaited<ReturnType<typeof discover>>["statistics"] | undefined;
   log("info", "loop.started", { count: options.targets.length });
   while (!signal.aborted) {
     const cycleStarted = startTimer();
     const started = Date.now();
     let delay = options.intervalMs;
-    let targets = options.targets;
-    let scope = null;
-    if (options.discovery) {
+    const targets = cache.list();
+    const run_id = randomUUID();
+    const snapshots = new Map<string, ReturnType<ReconCache["read"]>>();
+    for (const target of targets) {
+      const identity = { ...target, run_id };
       try {
-        const found = await discover(options.discovery, undefined, discoveryBaseline);
-        discoveryBaseline = found.statistics;
-        targets = [...new Map([...options.targets, ...found.targets].map(target => [targetKey(target), target])).values()];
-        scope = { chains: [...new Set(found.scope.sources.map(({ chain }) => chain))], triggers: found.scope.triggers,
-          pools_scanned: Object.values(found.counts).reduce((total, count) => total + count, 0) };
-        log("info", "discovery.completed", { count: scope.pools_scanned });
-        await pipeline.audit({ stage: "market_discovery", status: "ok", gaps: [], detail: { ...scope, counts: found.counts } });
+        snapshots.set(targetKey(target), cache.read(identity));
       } catch (error) {
-        discoveryBaseline = undefined;
-        log("warn", "discovery.failed", { failure_kind: failureKind(error) });
-        await pipeline.audit({ stage: "market_discovery", status: "failed", gaps: ["discovery_unavailable"],
-          detail: error instanceof Error ? error.message : "Unknown discovery error" });
+        if (!(error instanceof CandidateError)) throw error;
+        await pipeline.audit({ identity, stage: "merge", status: "failed", gaps: [error.message] });
       }
     }
+    let ranking: Map<string, ScannerRow> | undefined;
+    for (const [token, until] of seen) if (until <= started) seen.delete(token);
+    const feed = [...snapshots.values()].flatMap((snapshot) => {
+      if (
+        !snapshot.feed_entry ||
+        snapshot.stale ||
+        cache.isRejected(snapshot.identity) ||
+        pipeline.positions.get(snapshot.identity)
+      )
+        return [];
+      const { as_of, social_score, ...item } = snapshot.feed_entry;
+      return [item];
+    });
+    let rankingError: unknown;
+    if (feed[0]) {
+      try {
+        const rows = await scanner(
+          pipeline.call,
+          { ...feed[0], run_id },
+          { run_id, feed, seen: [...seen.keys()], config: scannerLimits },
+        );
+        ranking = new Map(rows.map((row) => [targetKey(row), row]));
+      } catch (error) {
+        rankingError = error;
+      }
+    }
+    const rank = (target: Target) => {
+      const row = ranking?.get(targetKey(target));
+      return row && !row.skipped ? row.rank_score : Infinity;
+    };
+    targets.sort((a, b) => rank(a) - rank(b));
     for (const target of targets) {
       if (signal.aborted) break;
-      const identity = { ...target, run_id: randomUUID() };
-      const key = targetKey(target);
+      const identity = { ...target, run_id };
       const fields = { run_id: identity.run_id, chain: identity.chain };
       const candidateStarted = startTimer();
       try {
         await withLogContext(fields, async () => {
-          const cachedMarket = marketCache.get(key);
-          const cachedSecurity = securityCache.get(key);
-          log("debug", "recon.cache", { market_cache_hit: Boolean(cachedMarket), security_cache_hit: Boolean(cachedSecurity) });
-          const observations = await Promise.allSettled([
-            cachedMarket ?? reconA(pipeline.call, identity, undefined, scope),
-            cachedSecurity ?? reconB(pipeline.call, identity, undefined, options.goPlusAccessToken),
-            options.socialEnabled ? reconC(pipeline.call, identity) : undefined,
-          ] as const);
-          const [market, security, social] = observations;
-          if (market.status === "fulfilled") marketCache.set(key, market.value);
-          if (security.status === "fulfilled") securityCache.set(key, security.value);
-          if (social.status === "rejected") {
-            log("warn", "recon.social_unavailable", { failure_kind: failureKind(social.reason) });
-            await pipeline.audit({ identity, stage: "recon-c", status: "failed", gaps: ["social_unavailable"] });
+          if (cache.isRejected(target)) {
+            await pipeline.audit({ identity, stage: "pipeline", status: "skipped", gaps: ["cached_rug_fail"] });
+            log("info", "pipeline.skipped", { reason: "cached_rug_fail" });
+            return;
           }
-          for (const required of [market, security]) {
-            if (required.status === "rejected" && !(required.reason instanceof CandidateError)) {
-              throw required.reason;
-            }
-          }
-          const merged = merge(identity, marketCache.get(key), securityCache.get(key),
-            social.status === "fulfilled" ? social.value : undefined, options.ttl);
-          await pipeline.audit({ identity, stage: "merge", status: "ok", gaps: merged.gaps,
-            detail: { market: merged.market, security: merged.security, expires_at: merged.expires_at } });
-          const outcome = await runCandidate(merged, { ...pipeline, signal });
+          const merged = snapshots.get(targetKey(identity));
+          if (!merged) return;
+          await pipeline.audit({
+            identity,
+            stage: "merge",
+            status: merged.stale ? "skipped" : "ok",
+            gaps: merged.gaps,
+            detail: { expires_at: merged.expires_at },
+          });
+          if (rankingError && !merged.stale) throw rankingError;
+          const row = ranking?.get(targetKey(identity));
+          const outcome = await runCandidate(
+            merged,
+            { ...pipeline, signal, rejectRecon: (target) => cache.reject(target) },
+            row,
+          );
+          if (row && !row.skipped) seen.set(target.token, Date.now() + scannerLimits.dedup_window_sec * 1000);
           log("info", "candidate.completed", { outcome, duration_ms: elapsed(candidateStarted) });
         });
         failures = 0;
       } catch (error) {
         log(error instanceof CandidateError ? "warn" : "error", "candidate.failed", {
-          ...fields, failure_kind: failureKind(error), duration_ms: elapsed(candidateStarted),
+          ...fields,
+          failure_kind: failureKind(error),
+          duration_ms: elapsed(candidateStarted),
         });
         if (!(error instanceof CandidateError || error instanceof SystemError)) throw error;
-        await pipeline.audit({ identity, stage: "pipeline", status: "failed",
-          gaps: [error.name], detail: error.message });
+        await pipeline.audit({
+          identity,
+          stage: "pipeline",
+          status: "failed",
+          gaps: [error instanceof CandidateError ? error.message : error.name],
+          detail: error.message,
+        });
         if (error instanceof CandidateError) continue;
         failures += 1;
         if (failures >= options.breakerFailures) {
           log("warn", "loop.breaker_open", { ...fields, count: failures, cooldown_ms: options.breakerCooldownMs });
-          await pipeline.audit({ stage: "breaker", status: "failed", gaps: ["breaker_open"],
-            detail: { cooldown_ms: options.breakerCooldownMs, failures } });
+          await pipeline.audit({
+            stage: "breaker",
+            status: "failed",
+            gaps: ["breaker_open"],
+            detail: { cooldown_ms: options.breakerCooldownMs, failures },
+          });
           delay = Math.max(delay, Date.now() - started + options.breakerCooldownMs);
           break;
         }

@@ -9,14 +9,15 @@ nvm use
 npm install
 npm run build
 npm test
+npm run simulate
 cp .env.example .env
 ```
 
-Set `OPENAI_API_KEY` and a nonempty `WATCHLIST` in `.env`. Each watchlist element supplies `chain`, the base `token` address, and the liquidity-pool `pair` address. Supported chain identifiers are `ethereum`, `bsc`, `base`, and `solana`. Run `npm start` to start the control loop. Use Ctrl+C to stop. Use one process per audit journal. The startup path replays simulated fills from the journal, restoring committed position costs. Market marks refresh after restart.
+Set `OPENAI_API_KEY` and a nonempty `WATCHLIST` in `.env`. Each watchlist element supplies `chain`, the base `token` address, and the liquidity-pool `pair` address. Supported chain identifiers are `ethereum`, `bsc`, `base`, `solana`, `polygon`, and `arbitrum`. Run `npm start` to start the control loop. Use Ctrl+C to stop. Use one process per audit journal. The startup path replays simulated fills from the journal, restoring committed position costs. Market marks refresh after restart.
 
 Amounts and position limits use integer USD cents and basis points. Paper fills use an observed USD price and omit fees, slippage, routing, and settlement. The fixtures contain recorded public provider responses. Tests use those recordings, synthetic candidates, and mocked OpenAI calls. Live OpenAI access requires a model that supports Responses function calling and Structured Outputs.
 
-[Architecture](docs/architecture.md) · [Schemas](docs/schemas.md) · [Runtime ADR](docs/adr/0001-runtime.md)
+[Prompt conformance and verification](docs/conformance.md) · [Architecture](docs/architecture.md) · [Schemas](docs/schemas.md) · [Runtime ADR](docs/adr/0001-runtime.md)
 
 ## Vercel
 
@@ -24,6 +25,10 @@ The Vercel entry point serves a status response at `GET /` and runs one
 isolated paper-trading candidate at `POST /api/paper`. Every invocation starts
 with a fresh simulated portfolio and returns its audit events in JSON. The
 continuous worker and persistent journal are available through `npm start`.
+Supply an authenticated JSON POST body with `recon_snapshot` conforming to
+`schemas/recon-snapshot.ts`. The paper endpoint accepts precomputed market
+and security observations. An empty request emits a `stale_recon` skip.
+The continuous worker runs discovery and provider tools.
 
 Set these project environment variables to enable paper runs:
 

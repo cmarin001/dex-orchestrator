@@ -34,8 +34,8 @@ OUTPUT (one object, no prose):
 { "run_id":"", "token":"", "pair":"", "chain":"",
   "status":"SIZED|REFUSED|HALTED",
   "size_usd":n, "size_tokens":n|null,
-  "max_slippage_bps":n, "equity_at_decision":n,
-  "equity_age_sec":n, "risk_pct_used":n,
+  "max_slippage_bps":n, "equity_at_decision":n|null,
+  "equity_age_sec":n|null, "risk_pct_used":n,
   "reason":"short string" }
 
 RULES:

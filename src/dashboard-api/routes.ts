@@ -1,3 +1,5 @@
+import { tradeKey } from "../../schemas/common.js";
+import { equityCurveSchema } from "../../schemas/equity-curve.js";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
@@ -69,15 +71,12 @@ export function createDashboardApi(options: { token: string; auditPath: string; 
     const realized = projectTradeHistory(journal).reduce((sum, row) => sum + Math.round(row.pnl_usd * 100), 0);
     const open = new Map<string, number>();
     for (const e of journal) {
-      if (e.status === "paper_fill" && e.position) open.set(e.position.run_id, e.position.cost_cents);
-      if (e.status === "paper_close" && e.position) open.delete(e.position.run_id);
+      if (e.status === "paper_fill" && e.position) open.set(tradeKey(e.position), e.position.cost_cents);
+      if (e.status === "paper_close" && e.position) open.delete(tradeKey(e.position));
     }
-    const markedCents = liveViews(journal).reduce((sum, view) => {
-      const entry = view.marks.findLast(mark => mark.side === "buy");
-      if (!entry || !view.current_mark) return sum;
-      return sum + Math.round(entry.size_usd * 100 * (view.current_mark.price / view.entry_price - 1));
-    }, 0);
-    return c.json({ current_equity: options.initialCents + realized + markedCents,
+    const last = journal.findLast(event => event.stage === "equity-curve" && event.status === "ok");
+    const published = equityCurveSchema.safeParse(last?.detail);
+    return c.json({ current_equity: published.success ? Math.round(published.data.equity_usd * 100) : null,
       realized_cents: realized, open_positions: open.size, committed_cents: [...open.values()].reduce((a, b) => a + b, 0) });
   });
   app.get("/trades", async c => {
