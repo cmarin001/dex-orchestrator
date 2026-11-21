@@ -85,3 +85,9 @@ Operational records omit credentials, URLs and query values, prompts,
 model output, provider payloads, transaction bytes, and raw exception
 messages. The append-only audit journal remains the source for decision
 details and dashboard projections.
+
+## Live execution
+
+Paper is the default. The Phase 2 signer runs inside the worker and uses
+a dedicated journal and wallet. See the [live execution runbook](docs/live-runbook.md)
+for chain order, configuration, constraints, and first-run checks.

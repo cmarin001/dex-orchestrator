@@ -16,6 +16,7 @@ Stdio uses the local process's filesystem permissions.
 | GET /audit | get_recent_audit | Newest-first events. Optional limit (1–200), ISO `since` and `cursor` from `next_cursor` |
 | GET /candidates | get_candidates | Most recent Scanner batch and the last cycle's watched targets |
 | GET /risk | get_risk | Current risk config and revision metadata |
+| POST /controls/live-execution | set_live_execution | Arm or disarm new live orders with `{ "enabled": true }` or `{ "enabled": false }` |
 | POST /controls/pause | pause_entries | Queue an entry pause |
 | POST /controls/resume | resume_entries | Queue a resume subject to normal checks |
 | POST /controls/risk | update_risk | Queue `{ "config": { … } }` against the existing risk schema |
@@ -48,3 +49,13 @@ cycle timestamp to assess freshness and systemd to check actual liveness.
 A queued command can wait through a slow cycle or breaker cooldown. Local
 tests exercise fixture journals and mock trading providers. Remote HTTPS,
 desktop client setup and a live droplet are deployment checks.
+
+Live execution starts disarmed for a new live journal. Send
+`POST /api/v1/controls/live-execution` with a boolean `enabled` to change it.
+The worker applies it on its next control cycle. Check
+`GET /api/v1/status` for `execution_mode` and `live_execution_enabled`.
+A paper worker rejects arming. The last applied setting survives restarts
+of the same live journal. Disarming blocks new entries, exits, and fee
+replacements. Attempts already committed to the wallet journal can finish
+submission and remain under reconciliation. Commands are queued, so this
+switch takes effect when the worker applies it.

@@ -9,6 +9,7 @@ export const empty = z.strictObject({});
 export const requestKey = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 const key = { request_id: requestKey.optional() };
 export const toggle = z.strictObject(key);
+export const liveExecutionInput = z.strictObject({ ...key, enabled: z.boolean() });
 export const riskInput = z.strictObject({ ...key, config: riskConfigSchema });
 const tokenFields = { chain: chainSchema, token: z.string().min(1) };
 export const rejectInput = z.strictObject({ ...key, ...tokenFields }).refine(v => addressMatches(v.chain, v.token));
@@ -20,6 +21,7 @@ const address = z.strictObject(tokenFields).refine(v => addressMatches(v.chain, 
   .transform(v => ({ ...v, token: normalizeAddress(v.chain, v.token) }));
 const action = z.discriminatedUnion("type", [
   z.strictObject({type:z.literal("pause")}), z.strictObject({type:z.literal("resume")}),
+  z.strictObject({type:z.literal("live-execution"),enabled:z.boolean()}),
   z.strictObject({type:z.literal("risk"), config:riskConfigSchema}),
   z.strictObject({type:z.literal("reject"), target:address}),
   z.strictObject({type:z.literal("exit"), position:z.strictObject(handoff)}),

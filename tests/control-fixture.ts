@@ -14,14 +14,14 @@ export const target = {chain:"base",token:"0x" + "1".repeat(40),pair:"0x" + "2".
 export const identity = {...target,run_id:"fixture-run"};
 export const config = {...defaultRisk,max_slippage_bps:125};
 
-export async function controlFixture(t: TestContext) {
+export async function controlFixture(t: TestContext, live = false) {
   const dir = await mkdtemp(join(tmpdir(),"dex-controls-"));
   t.after(() => rm(dir,{recursive:true,force:true}));
   const paths = {auditPath:join(dir,"audit.jsonl"),riskPath:join(dir,"risk.jsonl"),inboxPath:join(dir,"inbox")};
   const audit = fileAudit(paths.auditPath);
   const cache = new ReconCache();
   const inbox = new Inbox(paths.inboxPath);
-  const makeWorker = () => new WorkerControls(inbox,paths.riskPath,cache,audit);
+  const makeWorker = () => new WorkerControls(inbox,paths.riskPath,cache,audit,live);
   const positions = new Positions();
   const timestamp = Date.now();
   const position = {...identity,cost_cents:1000,entry_price_usd:2,exit_policy:{
@@ -36,6 +36,7 @@ export async function controlFixture(t: TestContext) {
   }});
   await audit({stage:"worker_lifecycle",status:"ok",gaps:[],detail:"running"});
   await audit({stage:"worker_cycle",status:"ok",gaps:[],detail:{watched:[target],breaker_until:null}});
+  if (live) await audit({stage:"execution_mode",status:"ok",gaps:[],detail:{mode:"live",chain:"base"}});
   const worker = makeWorker();
-  return {paths,cache,worker,drain:()=>worker.drain(positions),control:createControl(paths)};
+  return {paths,cache,worker,makeWorker,drain:()=>worker.drain(positions),control:createControl(paths)};
 }

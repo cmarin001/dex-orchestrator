@@ -1,3 +1,4 @@
+import { isFill, isClose } from "./types.js";
 import { tradeKey } from "../../schemas/common.js";
 import { mkdir, open, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
@@ -49,9 +50,9 @@ async function loadJournal(path: string, allowPendingAppend: boolean) {
 export async function replayPositions(path: string): Promise<Position[]> {
   const open = new Map<string, Position>();
   for (const event of await readJournal(path)) {
-    if (event.status !== "paper_fill" && event.status !== "paper_close") continue;
+    if (!isFill(event.status) && !isClose(event.status)) continue;
     if (!event.position) throw new SystemError("Missing paper position");
-    if (event.status === "paper_fill") open.set(tradeKey(event.position), event.position);
+    if (isFill(event.status)) open.set(tradeKey(event.position), event.position);
     else open.delete(tradeKey(event.position));
   }
   return [...open.values()];

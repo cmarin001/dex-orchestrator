@@ -1,3 +1,4 @@
+import { isFill, isClose } from "../logging/types.js";
 import { tradeKey } from "../../schemas/common.js";
 import { equityCurveSchema } from "../../schemas/equity-curve.js";
 import { Hono } from "hono";
@@ -77,8 +78,8 @@ export function createDashboardApi(options: { token: string; auditPath: string; 
     const realized = projectTradeHistory(journal).reduce((sum, row) => sum + Math.round(row.pnl_usd * 100), 0);
     const open = new Map<string, number>();
     for (const e of journal) {
-      if (e.status === "paper_fill" && e.position) open.set(tradeKey(e.position), e.position.cost_cents);
-      if (e.status === "paper_close" && e.position) open.delete(tradeKey(e.position));
+      if (isFill(e.status) && e.position) open.set(tradeKey(e.position), e.position.cost_cents);
+      if (isClose(e.status) && e.position) open.delete(tradeKey(e.position));
     }
     const last = journal.findLast(event => event.stage === "equity-curve" && event.status === "ok");
     const published = equityCurveSchema.safeParse(last?.detail);
