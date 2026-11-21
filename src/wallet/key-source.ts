@@ -39,7 +39,8 @@ function decodeDer(der: Uint8Array) {
   return {r:toHex(r,{size:32}),s:toHex(s > scalarOrder/2n ? scalarOrder-s : s,{size:32})};
 }
 
-export async function evmKey(config: Pick<WalletConfig,"mode">, env: NodeJS.ProcessEnv): Promise<EvmKey> {
+export async function evmKey(config: Pick<WalletConfig,"mode">, env: NodeJS.ProcessEnv,
+  createKms = () => new KMSClient({})): Promise<EvmKey> {
   return scrub(async () => {
     if (config.mode === "env") {
       const key = env.EVM_PRIVATE_KEY;
@@ -49,7 +50,7 @@ export async function evmKey(config: Pick<WalletConfig,"mode">, env: NodeJS.Proc
     }
     const keyId = env.AWS_KMS_KEY_ID;
     if (!keyId) throw new Error();
-    const kms = new KMSClient({});
+    const kms = createKms();
     const key = await kms.send(new GetPublicKeyCommand({KeyId:keyId}));
     if (key.KeySpec !== "ECC_SECG_P256K1" || key.KeyUsage !== "SIGN_VERIFY" || !key.PublicKey) throw new Error();
     const jwk = createPublicKey({key:Buffer.from(key.PublicKey),type:"spki",format:"der"}).export({format:"jwk"});

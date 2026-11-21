@@ -109,8 +109,13 @@ A crash can leave the live journal's `.worker.lock` in place. Verify that the
 original worker has stopped before clearing the lock. Preserve the journal.
 A confirmed receipt with unexpected amounts requires manual reconciliation.
 
-EVM nonce replacement and Bitcoin RBF currently require manual reconciliation.
-The code avoids replacing an ambiguous transaction with a newly signed order.
+While the original intent is fresh, the wallet can make one bounded fee
+replacement after observing the original pending transaction. EVM keeps the
+nonce, destination, calldata and original gas limit. Bitcoin preserves every
+input and the recipient output, raises the fee from wallet change, and checks
+mempool acceptance. The wallet journals each identifier and checks all of them
+on recovery. If the chain cannot identify the pending original, the wallet
+holds the reservation for manual reconciliation.
 The Solana signer can rebuild the same intent after finalized blockheight and
 signature-history checks establish expiry. Worker recovery itself reconciles
 only. It requires a new pipeline decision before any new order. Deep reorgs

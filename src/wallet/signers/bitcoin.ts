@@ -6,6 +6,13 @@ import type { ChainAdapter } from "../signer.js";
 
 const utxos = z.array(z.object({txid:z.string().regex(/^[0-9a-f]{64}$/),vout:z.number().int().nonnegative(),
   amount:z.number().positive(),scriptPubKey:z.string(),safe:z.literal(true)}));
+const txid = z.string().regex(/^[0-9a-f]{64}$/);
+const pendingTransaction = z.object({
+  txid, confirmations:z.literal(0).default(0), vsize:z.number().int().positive(),
+  version:z.number().int(), locktime:z.number().int().nonnegative(),
+  vin:z.array(z.object({txid,vout:z.number().int().nonnegative(),sequence:z.number().int().min(0).max(0xffffffff)})).min(1),
+  vout:z.array(z.object({value:z.number().positive(),scriptPubKey:z.object({hex:z.string()})})).min(1).max(2),
+});
 const sats = (btc: number) => BigInt(Math.round(btc * 100_000_000));
 
 export function bitcoinAdapter(config: WalletConfig, key: Awaited<ReturnType<typeof bitcoinKey>>,
@@ -22,6 +29,20 @@ export function bitcoinAdapter(config: WalletConfig, key: Awaited<ReturnType<typ
     if (!response.ok) throw new Error("BITCOIN_RPC_FAILED");
     const reply = z.object({error:z.null(),result:z.unknown()}).parse(await response.json());
     return reply.result;
+  }
+  function checkedPSBT(tx: Transaction, recipient: Uint8Array, amount: bigint, change: bigint) {
+    const checked = Transaction.fromPSBT(tx.toPSBT());
+    const output = checked.getOutput(0);
+    if (output.amount !== amount || !Buffer.from(output.script!).equals(recipient) ||
+        checked.outputsLength !== (change >= 546n ? 2 : 1) ||
+        (checked.outputsLength === 2 && (!Buffer.from(checked.getOutput(1).script!).equals(key.script) ||
+          checked.getOutput(1).amount !== change))) throw new Error("PSBT_OUTPUT_MISMATCH");
+    return {simulation:{ok:true,max_fee_native:checked.fee.toString()},sign:async () => {
+      await key.sign(checked);
+      const verdict = z.tuple([z.object({allowed:z.literal(true)})]).safeParse(await rpc("testmempoolaccept",[[checked.hex]]));
+      if (!verdict.success) throw new Error("BITCOIN_MEMPOOL_REJECTED");
+      return {id:checked.id,bytes:Buffer.from(checked.hex,"hex")};
+    }};
   }
   return {
     chain:"bitcoin",
@@ -52,17 +73,49 @@ export function bitcoinAdapter(config: WalletConfig, key: Awaited<ReturnType<typ
       tx.addOutput({script:recipient,amount});
       const change = sum - amount - fee;
       if (change >= 546n) tx.addOutput({script:key.script,amount:change});
-      const checked = Transaction.fromPSBT(tx.toPSBT());
-      const output = checked.getOutput(0);
-      if (output.amount !== amount || !Buffer.from(output.script!).equals(recipient) ||
-          (checked.outputsLength === 2 && (!Buffer.from(checked.getOutput(1).script!).equals(key.script) ||
-            checked.getOutput(1).amount !== change))) throw new Error("PSBT_OUTPUT_MISMATCH");
-      return {simulation:{ok:true,max_fee_native:checked.fee.toString()},sign:async () => {
-        await key.sign(checked);
-        const verdict = z.tuple([z.object({allowed:z.literal(true)})]).safeParse(await rpc("testmempoolaccept",[[checked.hex]]));
-        if (!verdict.success) throw new Error("BITCOIN_MEMPOOL_REJECTED");
-        return {id:checked.id,bytes:Buffer.from(checked.hex,"hex")};
-      }};
+      return checkedPSBT(tx,recipient,amount,change);
+    },
+    async replace(intent,{id}) {
+      if (intent.route !== "native" || intent.token_in !== key.address ||
+          intent.amount_in !== intent.min_amount_out) return null;
+      const old = pendingTransaction.safeParse(await rpc("getrawtransaction",[id,true]).catch(()=>null));
+      if (!old.success || old.data.txid !== id || old.data.vin.every(input => input.sequence >= 0xfffffffe)) return null;
+      const mempool = z.object({fees:z.object({base:z.number().positive()}),descendantcount:z.literal(1)})
+        .safeParse(await rpc("getmempoolentry",[id]).catch(()=>null));
+      if (!mempool.success) return null;
+      const recipient = OutScript.encode(Address(network).decode(intent.token_out));
+      const amount = BigInt(intent.amount_in);
+      const [payment,change] = old.data.vout;
+      if (payment?.scriptPubKey.hex !== Buffer.from(recipient).toString("hex") || sats(payment.value) !== amount ||
+          change?.scriptPubKey.hex !== Buffer.from(key.script).toString("hex")) return null;
+      const policy = z.object({incrementalfee:z.number().positive()}).parse(await rpc("getnetworkinfo",[]));
+      const estimate = z.object({feerate:z.number().positive()}).parse(await rpc("estimatesmartfee",[2,"conservative"]));
+      const oldFee = sats(mempool.data.fees.base);
+      // P2WPKH signatures can vary slightly in size. Leave room for that
+      // change and Core's incremental relay fee requirement.
+      const vsize = BigInt(old.data.vsize + 2 * old.data.vin.length);
+      const incremental = BigInt(Math.ceil(policy.incrementalfee*100_000));
+      const market = BigInt(Math.ceil(estimate.feerate*100_000))*vsize;
+      const floor = oldFee + incremental*vsize + 1n;
+      const fee = market > floor ? market : floor;
+      const newChange = sats(change.value) - (fee - oldFee);
+      if (newChange < 546n) return null;
+      const replacement = new Transaction({version:old.data.version,lockTime:old.data.locktime});
+      let inputs = 0n;
+      for (const input of old.data.vin) {
+        // Exclude the mempool so Core can check the chain UTXO already
+        // consumed by the original pending transaction.
+        const previous = z.object({value:z.number().positive(),confirmations:z.number().int().positive(),
+          scriptPubKey:z.object({hex:z.string()})}).safeParse(await rpc("gettxout",[input.txid,input.vout,false]));
+        if (!previous.success || previous.data.scriptPubKey.hex !== Buffer.from(key.script).toString("hex")) return null;
+        const value = sats(previous.data.value);
+        inputs += value;
+        replacement.addInput({txid:input.txid,index:input.vout,sequence:input.sequence,witnessUtxo:{script:key.script,amount:value}});
+      }
+      if (inputs !== amount+sats(change.value)+oldFee) return null;
+      replacement.addOutput({script:recipient,amount});
+      replacement.addOutput({script:key.script,amount:newChange});
+      return checkedPSBT(replacement,recipient,amount,newChange);
     },
     broadcast:async bytes=>z.string().parse(await rpc("sendrawtransaction",[Buffer.from(bytes).toString("hex")])),
     async receipt(intent,{id}) {

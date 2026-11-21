@@ -26,6 +26,30 @@ export function evmAdapter(config: WalletConfig, key: EvmKey, apiKey: string, re
   const client = makeClient({chain,transport:http(config.rpc_url,{retryCount:0,timeout:10_000})});
   const relay = config.mev_protection ? makeClient({chain,transport:http("https://rpc.flashbots.net",{retryCount:0,timeout:10_000})}) : client;
   const chainId = config.chain;
+  function bindCalldata(intent: Parameters<ChainAdapter["prepare"]>[0], calldata: Hex) {
+    const sellToken = getAddress(intent.token_in);
+    const buyToken = getAddress(intent.token_out);
+      try {
+        const {args:[operator,token,inAmount,target,data]} = decodeFunctionData({abi:allowanceAbi,data:calldata});
+        const {args:[minimum,actions]} = decodeFunctionData({abi:settlerAbi,data});
+        if (operator !== target || getAddress(token) !== sellToken || inAmount !== BigInt(intent.amount_in) ||
+            getAddress(minimum.recipient) !== getAddress(key.address) || getAddress(minimum.buyToken) !== buyToken ||
+            minimum.minAmountOut < BigInt(intent.min_amount_out) || !actions.length) throw new Error();
+      } catch { throw new Error("QUOTE_MISMATCH"); }
+  }
+  function sign(tx: TransactionSerializableEIP1559) {
+    return async () => {
+      const signed = await key.sign(tx);
+      return {id:keccak256(signed),bytes:hexToBytes(signed)};
+    };
+  }
+  async function feeBound(tx: TransactionSerializableEIP1559) {
+    const execution = tx.gas! * tx.maxFeePerGas!;
+    if (chain.id !== 8453 && chain.id !== 10) return execution;
+    const { estimateL1Fee } = await import("viem/op-stack");
+    const l1 = await estimateL1Fee(client,{...tx,account:key.address,chain});
+    return execution + l1 * 2n;
+  }
   return {
     chain:chainId,
     address:async () => key.address,
@@ -44,38 +68,42 @@ export function evmAdapter(config: WalletConfig, key: EvmKey, apiKey: string, re
       if (getAddress(q.sellToken) !== sellToken || getAddress(q.buyToken) !== buyToken ||
           BigInt(q.sellAmount) !== BigInt(intent.amount_in) || BigInt(q.minBuyAmount) < BigInt(intent.min_amount_out) ||
           to !== getAddress(allowanceHolder) || BigInt(q.transaction.value) !== 0n) throw new Error("QUOTE_MISMATCH");
-      try {
-        const {args:[operator,token,inAmount,target,data]} = decodeFunctionData({abi:allowanceAbi,data:q.transaction.data});
-        const {args:[minimum,actions]} = decodeFunctionData({abi:settlerAbi,data});
-        if (operator !== target || getAddress(token) !== sellToken || inAmount !== BigInt(intent.amount_in) ||
-            getAddress(minimum.recipient) !== getAddress(key.address) || getAddress(minimum.buyToken) !== buyToken ||
-            minimum.minAmountOut < BigInt(intent.min_amount_out) || !actions.length) throw new Error();
-      } catch { throw new Error("QUOTE_MISMATCH"); }
+      bindCalldata(intent,q.transaction.data);
       const call = {account:key.address,to,data:q.transaction.data,value:0n};
       try { await client.call(call); } catch { throw new Error("SIMULATION_FAILED"); }
       const gas = (await client.estimateGas(call)*120n + 99n)/100n;
       const fees = await client.estimateFeesPerGas({type:"eip1559"});
-      // The independent configured cap is checked by the signer against this bound.
-      const executionFee = gas*fees.maxFeePerGas;
-      // L2 publication fees are separate from EVM execution gas.
-      const opStack = chain.id === 8453 || chain.id === 10;
-      if (opStack) {
-        const { estimateL1Fee } = await import("viem/op-stack");
-        const l1Fee = await estimateL1Fee(client, {account:key.address,to,data:call.data,
-          gas,maxFeePerGas:fees.maxFeePerGas,maxPriorityFeePerGas:fees.maxPriorityFeePerGas,chain});
-        return prepared(executionFee + l1Fee*2n);
-      }
-      return prepared(executionFee);
-
-      function prepared(totalFee: bigint) {
-        return {simulation:{ok:true,max_fee_native:totalFee.toString()},sign:async () => {
-          const nonce = await client.getTransactionCount({address:key.address,blockTag:"pending"});
-          const tx:TransactionSerializableEIP1559 = {type:"eip1559",chainId:chain.id,nonce,to,data:call.data,value:0n,
-            gas,maxFeePerGas:fees.maxFeePerGas,maxPriorityFeePerGas:fees.maxPriorityFeePerGas};
-          const signed = await key.sign(tx);
-          return {id:keccak256(signed),bytes:hexToBytes(signed)};
-        }};
-      }
+      const tx = {type:"eip1559" as const,chainId:chain.id,to,data:call.data,value:0n,gas,...fees};
+      const cost = await feeBound(tx);
+      return {simulation:{ok:true,max_fee_native:String(cost)},sign:async () => {
+        const nonce = await client.getTransactionCount({address:key.address,blockTag:"pending"});
+        return sign({...tx,nonce})();
+      }};
+    },
+    async replace(intent,{id}) {
+      if (await client.getChainId() !== chain.id) return null;
+      // An absent or already included original is not evidence that a replacement is safe.
+      const old = await client.getTransaction({hash:id as Hex}).catch(() => undefined);
+      if (!old || old.hash.toLowerCase() !== id.toLowerCase() || old.blockHash !== null ||
+          old.type !== "eip1559" || !old.to || getAddress(old.to) !== getAddress(allowanceHolder) ||
+          getAddress(old.from) !== key.address || old.value !== 0n ||
+          old.chainId !== chain.id || old.maxFeePerGas === undefined || old.maxPriorityFeePerGas === undefined) return null;
+      if (await client.getTransactionCount({address:key.address,blockTag:"latest"}) !== old.nonce) return null;
+      bindCalldata(intent,old.input);
+      const call = {account:key.address,to:old.to,data:old.input,value:0n};
+      try { await client.call(call); } catch { return null; }
+      const market = await client.estimateFeesPerGas({type:"eip1559"});
+      const bump = (previous: bigint, suggested: bigint) => {
+        const floor = (previous * 120n + 99n) / 100n + 1n;
+        return suggested > floor ? suggested : floor;
+      };
+      const priority = bump(old.maxPriorityFeePerGas,market.maxPriorityFeePerGas);
+      const maximum = bump(old.maxFeePerGas,market.maxFeePerGas);
+      const tx = {type:"eip1559" as const,chainId:chain.id,nonce:old.nonce,to:old.to,data:old.input,value:0n,
+        gas:old.gas,maxPriorityFeePerGas:priority,maxFeePerGas:maximum > priority ? maximum : priority,
+        accessList:old.accessList};
+      const cost = await feeBound(tx);
+      return {simulation:{ok:true,max_fee_native:String(cost)},sign:sign(tx)};
     },
     broadcast:bytes => relay.sendRawTransaction({serializedTransaction:("0x"+Buffer.from(bytes).toString("hex")) as Hex}),
     async receipt(intent,{id}) {
