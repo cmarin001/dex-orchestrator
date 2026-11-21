@@ -1,0 +1,25 @@
+[Unit]
+Description=DEX Orchestrator dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dex
+Group=dex
+WorkingDirectory=/opt/dex-orchestrator
+EnvironmentFile=/opt/dex-orchestrator/.env
+Environment=CONTROL_INBOX_PATH=/opt/dex-orchestrator/data/controls
+ExecStart=/usr/local/bin/node --import tsx src/dashboard-api/server.ts
+Restart=always
+RestartSec=5
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/dex-orchestrator/data/controls
+TimeoutStopSec=45
+
+[Install]
+WantedBy=multi-user.target

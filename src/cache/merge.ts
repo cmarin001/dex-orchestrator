@@ -6,7 +6,7 @@ import { CandidateError } from "../orchestrator/errors.js";
 export const NEW_TTL_MS = 300_000;
 export const WATCHED_TTL_MS = 60_000;
 export const targetKey = ({ chain, token, pair }: Target): string => `${chain}:${normalizeAddress(chain, token)}:${normalizeAddress(chain, pair)}`;
-export const reconKey = ({ chain, token }: Target): string => `${chain}:${normalizeAddress(chain, token)}`;
+export const reconKey = ({ chain, token }: Pick<Target,"chain"|"token">): string => `${chain}:${normalizeAddress(chain, token)}`;
 
 export function merge(identity: Handoff, snapshot: ReconSnapshot | undefined, ttlMs = NEW_TTL_MS, now = Date.now()) {
   const current = snapshot && targetKey(snapshot.target) === targetKey(identity) ? snapshot : undefined;

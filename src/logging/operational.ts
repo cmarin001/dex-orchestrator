@@ -50,7 +50,7 @@ export function log(level: Level, event: string, fields: Fields = {}) {
   const minimum = configured === "debug" || configured === "warn" || configured === "error" ? configured : "info";
   if (rank[level] < rank[minimum]) return;
   const line = JSON.stringify({ at: new Date().toISOString(), level, event, ...context.getStore(), ...fields });
-  if (level === "error" || level === "warn") console.error(line);
+  if (process.env.MCP_STDIO_LOGS === "true" || level === "error" || level === "warn") console.error(line);
   else console.log(line);
 }
 
@@ -71,7 +71,6 @@ export async function observe<T>(event: string, fields: Fields, fn: () => Promis
 
 export function logHttp(route: string, method: string, next: () => Promise<Response>) {
   const active = context.getStore()?.request_id;
-  // A Vercel gateway and its in-process Hono handler represent the same request.
   if (active) return next();
   const request_id = randomUUID();
   const safeMethod = ["GET", "POST", "OPTIONS", "HEAD", "PUT", "PATCH", "DELETE"].includes(method) ? method : "OTHER";
