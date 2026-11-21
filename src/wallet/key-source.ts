@@ -1,4 +1,8 @@
 import { createPublicKey } from "node:crypto";
+import { HDKey } from "@scure/bip32";
+import { mnemonicToSeedSync, validateMnemonic } from "@scure/bip39";
+import { wordlist } from "@scure/bip39/wordlists/english.js";
+import { withSecret } from "../config/secrets.js";
 import { GetPublicKeyCommand, KMSClient, SignCommand } from "@aws-sdk/client-kms";
 import { Keypair, VersionedTransaction } from "@solana/web3.js";
 import { bytesToHex, hexToBytes, keccak256, recoverAddress, serializeTransaction, toHex } from "viem";
@@ -43,10 +47,13 @@ export async function evmKey(config: Pick<WalletConfig,"mode">, env: NodeJS.Proc
   createKms = () => new KMSClient({})): Promise<EvmKey> {
   return scrub(async () => {
     if (config.mode === "env") {
-      const key = env.EVM_PRIVATE_KEY;
-      if (!key || !/^0x[0-9a-f]{64}$/i.test(key)) throw new Error();
-      const account = privateKeyToAccount(key as Hex);
-      return {address:account.address,sign:tx => scrub(() => account.signTransaction(tx),"SIGNING_FAILED")};
+      return withSecret(env,"EVM_PRIVATE_KEY",bytes=>{
+        const key=bytes?.toString("utf8").trim();
+        if (!key || !/^0x[0-9a-f]{64}$/i.test(key)) throw new Error();
+        const account=privateKeyToAccount(key as Hex);
+        return {address:account.address,sign:(tx:TransactionSerializableEIP1559)=>
+          scrub(() => account.signTransaction(tx),"SIGNING_FAILED")};
+      },"EVM_KEY_FILE");
     }
     const keyId = env.AWS_KMS_KEY_ID;
     if (!keyId) throw new Error();
@@ -73,21 +80,47 @@ export async function evmKey(config: Pick<WalletConfig,"mode">, env: NodeJS.Proc
 }
 
 export async function solanaKey(env: NodeJS.ProcessEnv) {
-  return scrub(() => {
-    const bytes = JSON.parse(env.SOLANA_PRIVATE_KEY ?? "");
-    if (!Array.isArray(bytes) || bytes.length !== 64 || bytes.some(b => !Number.isInteger(b)||b<0||b>255)) throw new Error();
-    const key = Keypair.fromSecretKey(Uint8Array.from(bytes));
-    return {address:key.publicKey,sign:(tx:VersionedTransaction) => scrub(() => tx.sign([key]),"SIGNING_FAILED")};
-  },"SOLANA_KEY_UNAVAILABLE");
+  return scrub(() => withSecret(env,"SOLANA_PRIVATE_KEY",raw=>{
+    const values:unknown=JSON.parse(raw?.toString("utf8") ?? "");
+    if (!Array.isArray(values) || values.length !== 64 ||
+        values.some(b=>!Number.isInteger(b)||b<0||b>255)) throw new Error();
+    const bytes=Uint8Array.from(values);
+    values.fill(0);
+    try {
+      const key=Keypair.fromSecretKey(bytes.slice());
+      return {address:key.publicKey,sign:(tx:VersionedTransaction)=>scrub(()=>tx.sign([key]),"SIGNING_FAILED")};
+    } finally { bytes.fill(0); }
+  },"SOLANA_KEY_FILE"),"SOLANA_KEY_UNAVAILABLE");
 }
 
 export async function bitcoinKey(env: NodeJS.ProcessEnv, testnet: boolean) {
-  return scrub(() => {
-    const raw = env.BITCOIN_PRIVATE_KEY;
-    if (!raw || !/^[0-9a-f]{64}$/i.test(raw)) throw new Error();
-    const key = hexToBytes(("0x"+raw) as Hex);
-    const payment = p2wpkh(secp256k1.getPublicKey(key,true),testnet ? TEST_NETWORK : NETWORK);
-    return {address:payment.address,script:payment.script,
-      sign:(tx:Transaction)=>scrub(() => { if (!tx.sign(key)) throw new Error(); tx.finalize(); },"SIGNING_FAILED")};
+  return scrub(async ()=>{
+    function signer(key:Uint8Array) {
+      const payment=p2wpkh(secp256k1.getPublicKey(key,true),testnet ? TEST_NETWORK : NETWORK);
+      return {address:payment.address,script:payment.script,sign:(tx:Transaction)=>
+        scrub(()=>{ if (!tx.sign(key)) throw new Error(); tx.finalize(); },"SIGNING_FAILED")};
+    }
+    if (env.BITCOIN_MNEMONIC_FILE || env.BITCOIN_MNEMONIC) {
+      return withSecret(env,"BITCOIN_MNEMONIC",raw=>{
+        const words=raw?.toString("utf8").trim().split(/\s+/).join(" ") ?? "";
+        const coin=testnet?1:0;
+        const path=env.BITCOIN_DERIVATION_PATH;
+        if (!path || !new RegExp("^m/84'/"+coin+"'/[0-9]+'/[01]/[0-9]+$").test(path) ||
+            !validateMnemonic(words,wordlist)) throw new Error();
+        const seed=mnemonicToSeedSync(words);
+        const root=HDKey.fromMasterSeed(seed);
+        let child:HDKey | undefined;
+        try {
+          child=root.derive(path);
+          if (!child.privateKey) throw new Error();
+          return signer(Uint8Array.from(child.privateKey));
+        } finally { seed.fill(0); root.wipePrivateData(); child?.wipePrivateData(); }
+      });
+    }
+    return withSecret(env,"BITCOIN_PRIVATE_KEY",bytes=>{
+      const raw=bytes?.toString("utf8").trim();
+      if (!raw || !/^[0-9a-f]{64}$/i.test(raw)) throw new Error();
+      return signer(hexToBytes(("0x"+raw) as Hex));
+    },"BITCOIN_KEY_FILE");
   },"BITCOIN_KEY_UNAVAILABLE");
 }

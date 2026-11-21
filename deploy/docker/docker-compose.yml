@@ -1,0 +1,119 @@
+name: dex-orchestrator
+
+x-service: &service
+  image: dex-orchestrator:local
+  user: "${DEX_UID:-1000}:${DEX_GID:-1000}"
+  restart: unless-stopped
+  init: true
+  stop_grace_period: 45s
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  tmpfs: [/tmp]
+  env_file: [../../.env]
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  worker:
+    <<: *service
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    environment:
+      DEX_SERVICE: worker
+      CONTROL_INBOX_PATH: /app/data/controls
+      EVM_KEY_FILE: /run/secrets/evm_private_key
+      SOLANA_KEY_FILE: /run/secrets/solana_private_key
+      BITCOIN_MNEMONIC_FILE: /run/secrets/bitcoin_mnemonic
+      OPENAI_API_KEY_FILE: /run/secrets/openai_api_key
+      DEEPSEEK_API_KEY_FILE: /run/secrets/deepseek_api_key
+      XAI_API_KEY_FILE: /run/secrets/xai_api_key
+      LIVE_RPC_URL_FILE: /run/secrets/live_rpc_url
+      ZEROX_API_KEY_FILE: /run/secrets/zerox_api_key
+      JUPITER_API_KEY_FILE: /run/secrets/jupiter_api_key
+      GOPLUS_ACCESS_TOKEN_FILE: /run/secrets/goplus_access_token
+      ETHERSCAN_API_KEY_FILE: /run/secrets/etherscan_api_key
+      X_BEARER_TOKEN_FILE: /run/secrets/x_bearer_token
+      REDDIT_ACCESS_TOKEN_FILE: /run/secrets/reddit_access_token
+    volumes:
+      - "${DEX_DATA_DIR:-../../data}:/app/data"
+      - "../../prompts:/app/prompts:ro"
+    secrets:
+      - evm_private_key
+      - solana_private_key
+      - bitcoin_mnemonic
+      - openai_api_key
+      - deepseek_api_key
+      - xai_api_key
+      - live_rpc_url
+      - zerox_api_key
+      - jupiter_api_key
+      - goplus_access_token
+      - etherscan_api_key
+      - x_bearer_token
+      - reddit_access_token
+
+  dashboard:
+    <<: *service
+    command: [node, dist/src/dashboard-api/server.js]
+    environment:
+      DEX_SERVICE: dashboard
+      DASHBOARD_API_TOKEN_FILE: /run/secrets/dashboard_api_token
+      DASHBOARD_API_HOST: 0.0.0.0
+      DASHBOARD_API_PORT: "8787"
+      CONTROL_INBOX_PATH: /app/data/controls
+    ports: ["127.0.0.1:8787:8787"]
+    volumes:
+      - "${DEX_DATA_DIR:-../../data}:/app/data:ro"
+      - "${DEX_DATA_DIR:-../../data}/controls:/app/data/controls"
+    secrets: [dashboard_api_token]
+
+  mcp:
+    <<: *service
+    command: [node, dist/src/mcp/server.js, --http]
+    environment:
+      DEX_SERVICE: mcp
+      DASHBOARD_API_TOKEN_FILE: /run/secrets/dashboard_api_token
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: "3001"
+      MCP_ALLOWED_HOSTS: "127.0.0.1:3001,localhost:3001"
+      CONTROL_INBOX_PATH: /app/data/controls
+    ports: ["127.0.0.1:3001:3001"]
+    volumes:
+      - "${DEX_DATA_DIR:-../../data}:/app/data:ro"
+      - "${DEX_DATA_DIR:-../../data}/controls:/app/data/controls"
+    secrets: [dashboard_api_token]
+
+secrets:
+  evm_private_key:
+    file: "${DEX_SECRETS_DIR:-/opt/dex-orchestrator/secrets}/evm_private_key.txt"
+  solana_private_key:
+    file: "${DEX_SECRETS_DIR:-/opt/dex-orchestrator/secrets}/solana_private_key.txt"
+  bitcoin_mnemonic:
+    file: "${DEX_SECRETS_DIR:-/opt/dex-orchestrator/secrets}/bitcoin_mnemonic.txt"
+  openai_api_key:
+    file: "${DEX_SECRETS_DIR:-/opt/dex-orchestrator/secrets}/openai_api_key.txt"
+  dashboard_api_token:
+    file: "${DEX_SECRETS_DIR:-/opt/dex-orchestrator/secrets}/dashboard_api_token.txt"
+  deepseek_api_key:
+    file: "${DEX_SECRETS_DIR:-/opt/dex-orchestrator/secrets}/deepseek_api_key.txt"
+  xai_api_key:
+    file: "${DEX_SECRETS_DIR:-/opt/dex-orchestrator/secrets}/xai_api_key.txt"
+  live_rpc_url:
+    file: "${DEX_SECRETS_DIR:-/opt/dex-orchestrator/secrets}/live_rpc_url.txt"
+  zerox_api_key:
+    file: "${DEX_SECRETS_DIR:-/opt/dex-orchestrator/secrets}/zerox_api_key.txt"
+  jupiter_api_key:
+    file: "${DEX_SECRETS_DIR:-/opt/dex-orchestrator/secrets}/jupiter_api_key.txt"
+  goplus_access_token:
+    file: "${DEX_SECRETS_DIR:-/opt/dex-orchestrator/secrets}/goplus_access_token.txt"
+  etherscan_api_key:
+    file: "${DEX_SECRETS_DIR:-/opt/dex-orchestrator/secrets}/etherscan_api_key.txt"
+  x_bearer_token:
+    file: "${DEX_SECRETS_DIR:-/opt/dex-orchestrator/secrets}/x_bearer_token.txt"
+  reddit_access_token:
+    file: "${DEX_SECRETS_DIR:-/opt/dex-orchestrator/secrets}/reddit_access_token.txt"

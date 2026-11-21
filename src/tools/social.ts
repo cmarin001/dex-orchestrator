@@ -2,11 +2,12 @@ import { z } from "zod";
 import type { Tool } from "../agents/call.js";
 import { getJson } from "./dexscreener.js";
 
-export function socialActions(tokens: string[], windowMinutes: number, request = fetch): Tool[] {
+export function socialActions(tokens: string[], windowMinutes: number, request = fetch, credentials: { x?:string; reddit?:string; subreddit?:string }={x:process.env.X_BEARER_TOKEN, reddit:process.env.REDDIT_ACCESS_TOKEN,
+  subreddit:process.env.REDDIT_SUBREDDIT}): Tool[] {
   if (!tokens.length) return [];
   const query = z.enum(tokens as [string, ...string[]]);
   const actions: Tool[] = [];
-  const bearer = process.env.X_BEARER_TOKEN;
+  const bearer = credentials.x;
   if (bearer) {
     const parameters = z.strictObject({ query, limit: z.number().int().min(10).max(100) });
     actions.push({
@@ -29,8 +30,8 @@ export function socialActions(tokens: string[], windowMinutes: number, request =
       },
     });
   }
-  const reddit = process.env.REDDIT_ACCESS_TOKEN,
-    subreddit = process.env.REDDIT_SUBREDDIT;
+  const reddit = credentials.reddit,
+    subreddit = credentials.subreddit;
   if (reddit && subreddit && /^[A-Za-z0-9_]+$/.test(subreddit)) {
     const parameters = z.strictObject({ subreddit: z.literal(subreddit), query });
     actions.push({

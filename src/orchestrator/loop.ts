@@ -19,6 +19,8 @@ export interface LoopOptions {
   breakerCooldownMs: number;
   discovery?: DiscoveryScope;
   goPlusAccessToken?: string;
+  social?: {x?:string;reddit?:string;subreddit?:string};
+  etherscanApiKey?: string;
 }
 
 export async function runLoop(

@@ -29,6 +29,8 @@ import { initialSettings } from "./mode/config.js";
 import { ModeRuntime } from "./mode/runtime.js";
 import { ControlPlane } from "./control/plane.js";
 import { ConfigJournals } from "./control/config-journals.js";
+import { secretText } from "./config/secrets.js";
+import { tradeKey } from "../schemas/common.js";
 import { Registry } from "./strategies/registry.js";
 import { StrategyEvidence } from "./strategies/evidence.js";
 import { createSigner } from "./wallet/signer.js";
@@ -135,6 +137,7 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
       if (open && open.run_id === identity.run_id && point.success) equity.mark(open, point.data.price, point.data.t);
     }
   }
+  await audit({stage:"worker_replay",status:"ok",gaps:[],detail:{position_keys:positions.list().map(tradeKey).sort()}});
   const live = wallet && wallet.stable && signer
     ? createLiveExecution({...wallet, signer, audit, journal, positions, equity, enabled,onClose:(chain,pnl)=>plane.noteClose(chain,pnl)}) : undefined;
   const abort = new AbortController();
@@ -146,12 +149,16 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
   const options = {
     targets: uniqueTargets, discovery, intervalMs: env.LOOP_INTERVAL_MS,
     breakerFailures: env.BREAKER_FAILURES, breakerCooldownMs: env.BREAKER_COOLDOWN_MS,
-    goPlusAccessToken: env.GOPLUS_ACCESS_TOKEN,
+    goPlusAccessToken: await secretText(process.env,"GOPLUS_ACCESS_TOKEN"),
+    etherscanApiKey: await secretText(process.env,"ETHERSCAN_API_KEY"),
+    social:{x:await secretText(process.env,"X_BEARER_TOKEN"),reddit:await secretText(process.env,"REDDIT_ACCESS_TOKEN"),
+      subreddit:process.env.REDDIT_SUBREDDIT},
   };
-  const providers=new Map(Object.entries(settings.definitions).flatMap(([id,definition])=>{
-    const key=definition.apiKeyEnv ? process.env[definition.apiKeyEnv] : undefined;
-    return definition.apiKeyEnv && !key ? [] : [[id,new OpenAICompatProvider(id,definition,key)] as const];
+  const configured=await Promise.all(Object.entries(settings.definitions).map(async ([id,definition])=>{
+    const key=definition.apiKeyEnv ? await secretText(process.env,definition.apiKeyEnv) : undefined;
+    return definition.apiKeyEnv && !key ? null : [id,new OpenAICompatProvider(id,definition,key)] as const;
   }));
+  const providers=new Map(configured.filter(row=>row!==null));
   const router=new Router(providers,budget,Date.now,async detail=>{
     await audit({stage:"model_provider",status:detail.ok?"ok":"failed",gaps:[],detail});
   });

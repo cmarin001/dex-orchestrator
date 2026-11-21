@@ -139,3 +139,19 @@ decisions do not guarantee an executable or profitable exit.
 - [ ] Watch the first five transactions and verify each receipt against the journal.
 - [ ] Sweep excess funds to a verified cold address in a separate manual job.
 - [ ] Pause entries and reconcile outstanding transactions if a balance or receipt differs.
+
+## First deploy on DigitalOcean
+
+Follow [the Phase 1B deployment guide](../deploy/README.md). Keep each
+chain's hot wallet below 5% of total capital and plan the separate manual
+sweep before funding it. The operator runs the provisioning, configures
+the cloud firewall and DNS, enters keys by hand, and obtains the certificate.
+
+Before arming live execution, run `deploy/scripts/99-verify.sh` from
+outside and on the host. The gate requires a 48-hour strategies-only
+paper soak, skips and at least five paper fills, matching replayed positions
+after restart, 401 without bearer credentials, blocked public ports 8787
+and 3001, valid TLS and HSTS, and no credential values in the container
+environment or retained worker logs. Compose verifies readable file mounts
+and mode-600 host files. The gate also validates a successful authorized
+request through Nginx.
