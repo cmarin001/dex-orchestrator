@@ -3,10 +3,22 @@ import { log } from "../logging/operational.js";
 import { createDashboardApi } from "./routes.js";
 import { secretText } from "../config/secrets.js";
 
-const token = await secretText(process.env,"DASHBOARD_API_TOKEN") ?? "";
-if (!token.trim()) log("error", "dashboard.start_failed", { reason: "missing_api_token" });
+import { dashboardAuthMode, dashboardJwt } from "./jwt.js";
+
+const env = process.env;
+const mode = dashboardAuthMode(env.DASHBOARD_AUTH_MODE);
+const token = mode === "auth0" ? undefined : await secretText(env, "DASHBOARD_API_TOKEN");
+if (mode !== "auth0" && !token) throw new Error("DASHBOARD_API_TOKEN is required in legacy and dual modes");
+const jwt = mode === "legacy" ? undefined : dashboardJwt({
+  issuer: env.AUTH0_ISSUER ?? "",
+  audience: env.AUTH0_AUDIENCE ?? "",
+  clientId: env.AUTH0_CLIENT_ID ?? "",
+  mfaClaim: env.AUTH0_MFA_CLAIM ?? "",
+  maxMfaAge: Number(env.DASHBOARD_MFA_MAX_AGE_SEC ?? 300),
+});
+log("info", "dashboard.auth_configured", { reason: mode });
 const api = createDashboardApi({
-  token,
+  token, jwt,
   auditPath: process.env.AUDIT_PATH ?? "data/audit.jsonl",
   riskPath: process.env.RISK_CONFIG_PATH ?? "data/risk-config.jsonl",
   inboxPath: process.env.CONTROL_INBOX_PATH,

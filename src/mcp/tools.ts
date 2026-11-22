@@ -5,10 +5,11 @@ import { auditQuery, controlInputs, type ControlService } from "../control/servi
 import { changes, input, type Change } from "../control/phase3.js";
 import { failureKind, log } from "../logging/operational.js";
 
-export function createMcp(control: ControlService, actor: string) {
+export function createMcp(control: ControlService, actor: string, readOnly = false) {
   const server = new McpServer({ name:"dex-orchestrator", version:"1.0.0" });
   function tool(name: string, description: string, inputSchema: ZodObject, readOnlyHint: boolean,
     call: (input: unknown) => Promise<Record<string, unknown>>) {
+    if (readOnly && !readOnlyHint) return;
     server.registerTool(name, { description, inputSchema, annotations:{readOnlyHint} }, async input => {
       try {
         const result = await call(input);

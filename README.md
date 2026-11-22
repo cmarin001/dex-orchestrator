@@ -103,3 +103,8 @@ configured provider account before enabling paid modes.
 
 [Control-plane ADR](docs/adr/0005-control-plane.md) ·
 [Strategy reference](docs/strategies.md) · [REST and MCP](docs/dashboard-api.md)
+
+## Phase 5 authentication
+
+See [dashboard authentication](docs/dashboard-auth.md) for Auth0 settings,
+scopes, MFA requirements and the shared-token migration modes.
