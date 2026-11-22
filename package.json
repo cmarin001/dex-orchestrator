@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "tsc --noEmit",
-    "test": "node --import tsx --test tests/unit/*.test.ts tests/integration/*.test.ts",
+    "test": "node --import tsx --test tests/unit/*.test.ts tests/unit/*.test.mjs tests/integration/*.test.ts",
     "start": "node --env-file-if-exists=.env --import tsx src/index.ts",
     "dashboard:api": "node --env-file-if-exists=.env --import tsx src/dashboard-api/server.ts",
     "simulate": "node --import tsx --test tests/integration/simulation.test.ts",
@@ -20,6 +20,7 @@
     "@hono/node-server": "2.1.9",
     "@modelcontextprotocol/sdk": "1.32.2",
     "@noble/curves": "2.4.0",
+    "@noble/ed25519": "3.2.0",
     "@scure/bip32": "2.0.1",
     "@scure/bip39": "2.0.1",
     "@scure/btc-signer": "2.4.1",

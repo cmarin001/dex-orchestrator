@@ -18,10 +18,11 @@ import { ControlConflict } from "../control/commands.js";
 import { changes, reads, type Change } from "../control/phase3.js";
 import { dashboardAccess, type DashboardAuthEnv } from "./auth.js";
 import { dashboardJwt, sensitiveScope } from "./jwt.js";
+import { walletOverview } from "./wallets.js";
 import type { Context } from "hono";
 
 export const dashboardRoutes = new Set(["/health", "/equity", "/journal", "/live-view", "/live-view/stream", "/trades", "/risk-config"]);
-const apiPaths = new Set([...["health","status","positions","equity","audit","candidates","risk"],
+const apiPaths = new Set([...["health","status","positions","equity","audit","candidates","risk","wallets"],
   ...Object.keys(controlInputs).map(name => "controls/" + name)].map(name => "/api/v1/" + name));
 
 const querySchema = z.object({
@@ -152,6 +153,8 @@ export function createDashboardApi(options: { token?: string; jwt?: ReturnType<t
   for (const name of ["health","status","positions","equity","candidates","risk"] as const) {
     app.get("/api/v1/" + name, async c => c.json(await control[name]()));
   }
+  const wallets = walletOverview(options.auditPath);
+  app.get("/api/v1/wallets", async c => c.json(await wallets()));
   app.get("/api/v1/audit", async c => {
     const input = await control.audit(c.req.query()).catch(error => {
       if (error instanceof z.ZodError) return null;

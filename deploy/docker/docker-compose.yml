@@ -28,7 +28,7 @@ services:
       CONTROL_INBOX_PATH: /app/data/controls
       EVM_KEY_FILE: /run/secrets/evm_private_key
       SOLANA_KEY_FILE: /run/secrets/solana_private_key
-      BITCOIN_MNEMONIC_FILE: /run/secrets/bitcoin_mnemonic
+      BITCOIN_KEY_FILE: /run/secrets/bitcoin_segwit_private_key
       OPENAI_API_KEY_FILE: /run/secrets/openai_api_key
       DEEPSEEK_API_KEY_FILE: /run/secrets/deepseek_api_key
       XAI_API_KEY_FILE: /run/secrets/xai_api_key
@@ -45,7 +45,7 @@ services:
     secrets:
       - evm_private_key
       - solana_private_key
-      - bitcoin_mnemonic
+      - bitcoin_segwit_private_key
       - openai_api_key
       - deepseek_api_key
       - xai_api_key
@@ -93,8 +93,8 @@ secrets:
     file: "${DEX_SECRETS_DIR:-/opt/dex-orchestrator/secrets}/evm_private_key.txt"
   solana_private_key:
     file: "${DEX_SECRETS_DIR:-/opt/dex-orchestrator/secrets}/solana_private_key.txt"
-  bitcoin_mnemonic:
-    file: "${DEX_SECRETS_DIR:-/opt/dex-orchestrator/secrets}/bitcoin_mnemonic.txt"
+  bitcoin_segwit_private_key:
+    file: "${DEX_SECRETS_DIR:-/opt/dex-orchestrator/secrets}/bitcoin_segwit_private_key.txt"
   openai_api_key:
     file: "${DEX_SECRETS_DIR:-/opt/dex-orchestrator/secrets}/openai_api_key.txt"
   dashboard_api_token:

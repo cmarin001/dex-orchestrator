@@ -103,9 +103,8 @@ and lists missing required files. A configured live chain requires its
 signing material and RPC file. An enabled remote model in AI or hybrid
 mode requires its provider credential. Complete only the needed files in
 `/opt/dex-orchestrator/secrets/` using an editor, then rerun the initializer.
-Use separate keys per chain. Set `BITCOIN_DERIVATION_PATH` explicitly if using a
-BIP84 Bitcoin seed, verify the resulting watch-only address, and use testnet
-coin type 1 or mainnet coin type 0.
+Use separate signer keys per chain. See the [secrets runbook](../docs/secrets-runbook.md)
+for native SegWit key provisioning and wallet verification.
 
 Keep the secret directory at mode 700 and its files at 600, owned by deploy.
 The scripts pass deploy's numeric UID and GID into Compose because local

@@ -1,7 +1,4 @@
 import { createPublicKey } from "node:crypto";
-import { HDKey } from "@scure/bip32";
-import { mnemonicToSeedSync, validateMnemonic } from "@scure/bip39";
-import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { withSecret } from "../config/secrets.js";
 import { GetPublicKeyCommand, KMSClient, SignCommand } from "@aws-sdk/client-kms";
 import { Keypair, VersionedTransaction } from "@solana/web3.js";
@@ -100,27 +97,11 @@ export async function bitcoinKey(env: NodeJS.ProcessEnv, testnet: boolean) {
       return {address:payment.address,script:payment.script,sign:(tx:Transaction)=>
         scrub(()=>{ if (!tx.sign(key)) throw new Error(); tx.finalize(); },"SIGNING_FAILED")};
     }
-    if (env.BITCOIN_MNEMONIC_FILE || env.BITCOIN_MNEMONIC) {
-      return withSecret(env,"BITCOIN_MNEMONIC",raw=>{
-        const words=raw?.toString("utf8").trim().split(/\s+/).join(" ") ?? "";
-        const coin=testnet?1:0;
-        const path=env.BITCOIN_DERIVATION_PATH;
-        if (!path || !new RegExp("^m/84'/"+coin+"'/[0-9]+'/[01]/[0-9]+$").test(path) ||
-            !validateMnemonic(words,wordlist)) throw new Error();
-        const seed=mnemonicToSeedSync(words);
-        const root=HDKey.fromMasterSeed(seed);
-        let child:HDKey | undefined;
-        try {
-          child=root.derive(path);
-          if (!child.privateKey) throw new Error();
-          return signer(Uint8Array.from(child.privateKey));
-        } finally { seed.fill(0); root.wipePrivateData(); child?.wipePrivateData(); }
-      });
-    }
     return withSecret(env,"BITCOIN_PRIVATE_KEY",bytes=>{
       const raw=bytes?.toString("utf8").trim();
       if (!raw || !/^[0-9a-f]{64}$/i.test(raw)) throw new Error();
-      return signer(hexToBytes(("0x"+raw) as Hex));
+      const key = hexToBytes(("0x"+raw) as Hex);
+      try { return signer(key.slice()); } finally { key.fill(0); }
     },"BITCOIN_KEY_FILE");
   },"BITCOIN_KEY_UNAVAILABLE");
 }

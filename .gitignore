@@ -7,3 +7,9 @@ data/
 /src/strategies/custom/
 secrets/
 dist/
+
+/tools/derive/
+master_mnemonic.txt
+bitcoin_mnemonic.txt
+/.test-wallet-*/
+/.test-wizard-*/

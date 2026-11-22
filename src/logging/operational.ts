@@ -78,6 +78,7 @@ export function logHttp(route: string, method: string, next: () => Promise<Respo
     const started = startTimer();
     try {
       const response = await next();
+      response.headers.set("X-Request-Id", request_id);
       const status = response.status;
       log(status >= 500 ? "error" : status >= 400 ? "warn" : "info", "http.request", {
         route, method: safeMethod, status, duration_ms: elapsed(started),
