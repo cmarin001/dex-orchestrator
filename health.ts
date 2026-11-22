@@ -38,6 +38,14 @@ async function check() {
       Number(process.env.BREAKER_COOLDOWN_MS ?? 180_000)*2);
     return Date.now()-at<=delay;
   }
+  if (process.env.DASHBOARD_AUTH_MODE === "auth0") {
+    const mcp = svc === "mcp";
+    const port = mcp ? process.env.MCP_PORT ?? "3001" : process.env.DASHBOARD_API_PORT ?? "8787";
+    const response = await fetch("http://127.0.0.1:" + port + (mcp ? "/mcp" : "/internal/health"),
+      { signal: AbortSignal.timeout(4000), redirect: "error" });
+    await response.body?.cancel();
+    return response.status === (mcp ? 401 : 200);
+  }
   const token=await secretText(process.env,"DASHBOARD_API_TOKEN");
   if (!token) return false;
   const url=svc==="mcp"

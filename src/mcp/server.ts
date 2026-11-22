@@ -4,7 +4,10 @@ import { createMcpHttp } from "./http.js";
 import { createMcp } from "./tools.js";
 import { secretText } from "../config/secrets.js";
 
+import { dashboardAuthMode } from "../dashboard-api/jwt.js";
+
 const env = process.env;
+const authMode = dashboardAuthMode(env.DASHBOARD_AUTH_MODE);
 const control = createControl({
   auditPath:env.AUDIT_PATH ?? "data/audit.jsonl",
   riskPath:env.RISK_CONFIG_PATH ?? "data/risk-config.jsonl",
@@ -15,8 +18,8 @@ if (process.argv.includes("--http")) {
   const port = Number(env.MCP_PORT ?? 8788);
   const host = env.MCP_HOST ?? "127.0.0.1";
   const hosts = env.MCP_ALLOWED_HOSTS?.split(",").map(host => host.trim()) ?? [host + ":" + port];
-  createMcpHttp(control,await secretText(env,"DASHBOARD_API_TOKEN") ?? "",actor,hosts).listen(port,host);
+  createMcpHttp(control,authMode === "auth0" ? "" : await secretText(env,"DASHBOARD_API_TOKEN") ?? "",actor,hosts,authMode !== "legacy").listen(port,host);
 } else {
   process.env.MCP_STDIO_LOGS = "true";
-  await createMcp(control,actor).connect(new StdioServerTransport());
+  await createMcp(control,actor,authMode !== "legacy").connect(new StdioServerTransport());
 }

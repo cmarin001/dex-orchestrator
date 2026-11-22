@@ -91,9 +91,18 @@ status_code() {
 }
 auth_unauthenticated() { [[ $(status_code) == 401 ]]; }
 auth_authenticated() {
+  if [[ $(setting DASHBOARD_AUTH_MODE) == auth0 ]]; then
+    curl --noproxy "*" --resolve "$domain:443:127.0.0.1" --max-time 8 -fsS "https://$domain/auth/me" |
+      jq -e ".authenticated == false" >/dev/null
+    return
+  fi
   local token
   token=$(<"$secrets/dashboard_api_token.txt")
   [[ $token =~ ^[a-f0-9]{64}$ ]] || return 1
+  if [[ $(setting DASHBOARD_AUTH_MODE) == dual ]]; then
+    [[ $(printf "Authorization: Bearer %s\n" "$token" | curl --noproxy "*" --max-time 8 -sS -o /dev/null -w "%{http_code}" -H @- http://127.0.0.1:8787/api/v1/status) == 200 ]]
+    return
+  fi
   [[ $(printf 'Authorization: Bearer %s\n' "$token" | status_code -H @-) == 200 ]]
 }
 inspect_env() {
@@ -101,7 +110,7 @@ inspect_env() {
   for service in worker dashboard mcp; do
     id=$(compose ps -q "$service") || return 1
     payload=$(docker inspect --format '{{json .Config.Env}}' "$id") || return 1
-    jq -e 'all(.[]; test("^[A-Za-z_0-9]*(PRIVATE_KEY|MNEMONIC|API_KEY|ACCESS_KEY|ACCESS_TOKEN|BEARER_TOKEN|API_TOKEN|SECRET_KEY|SESSION_TOKEN|RPC_URL|PASSWORD)=")|not)'       <<< "$payload" >/dev/null || return 1
+    jq -e 'all(.[]; test("^[A-Za-z_0-9]*(PRIVATE_KEY|MNEMONIC|API_KEY|ACCESS_KEY|ACCESS_TOKEN|BEARER_TOKEN|API_TOKEN|SECRET_KEY|CLIENT_SECRET|SESSION_TOKEN|RPC_URL|PASSWORD)=")|not)'       <<< "$payload" >/dev/null || return 1
   done
 }
 secret_mounts() {
@@ -178,7 +187,7 @@ check 'MCP bound only on loopback' published_ports mcp 3001
 check 'Recent external checks cover SSH, blocked ports, TLS and HSTS' verify_outside
 if auth_unauthenticated; then
   printf 'PASS: dashboard requires bearer authentication\n' >&2
-  check 'Dashboard works with the mounted token through Nginx' auth_authenticated
+  check 'Dashboard works with the legacy credential or BFF session endpoint is reachable' auth_authenticated
 else
   printf 'FAIL: dashboard requires bearer authentication — expected HTTP 401; authenticated probe skipped\n' >&2
   failed=1

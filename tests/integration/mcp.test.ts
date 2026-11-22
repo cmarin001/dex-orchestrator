@@ -78,3 +78,17 @@ test("stdio entry point reserves stdout for MCP messages", async t => {
   await client.connect(transport);
   assert.deepEqual((await client.callTool({name:"get_status"})).structuredContent,await f.control.status());
 });
+
+test("MCP migration mode exposes only read tools", async t => {
+  const f = await controlFixture(t);
+  const [desktop, serverTransport] = InMemoryTransport.createLinkedPair();
+  const service = createMcp(f.control, "legacy", true);
+  const client = new Client({ name: "observer", version: "1.0.0" });
+  t.after(async () => { await client.close(); await service.close(); });
+  await service.connect(serverTransport);
+  await client.connect(desktop);
+  const { tools } = await client.listTools();
+  assert.ok(tools.some(tool => tool.name === "get_status"));
+  assert.ok(tools.every(tool => tool.annotations?.readOnlyHint === true));
+  assert.equal((await client.callTool({ name: "set_live_execution", arguments: { enabled: true } })).isError, true);
+});

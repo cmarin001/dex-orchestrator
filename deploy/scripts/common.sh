@@ -30,7 +30,7 @@ compose() {
 }
 
 required_secrets() {
-  printf '%s\n' dashboard_api_token
+  [[ $(setting DASHBOARD_AUTH_MODE) == auth0 ]] || printf '%s\n' dashboard_api_token
   local execution chain wallet decision
   execution=$(setting EXECUTION_MODE); chain=$(setting LIVE_CHAIN); wallet=$(setting WALLET_MODE)
   decision=$(setting OPERATING_MODE)
@@ -75,7 +75,7 @@ env_has_no_secrets() {
     NF < 2 {bad=1; next}
     {
       key=$1; gsub(/^[[:space:]]*(export[[:space:]]+)?|[[:space:]]+$/, "", key)
-      if (key ~ /(PRIVATE_KEY|MNEMONIC|API_KEY|ACCESS_KEY|ACCESS_TOKEN|BEARER_TOKEN|API_TOKEN|SECRET_KEY|SESSION_TOKEN|RPC_URL|PASSWORD)$/) bad=1
+      if (key ~ /(PRIVATE_KEY|MNEMONIC|API_KEY|ACCESS_KEY|ACCESS_TOKEN|BEARER_TOKEN|API_TOKEN|SECRET_KEY|CLIENT_SECRET|SESSION_TOKEN|RPC_URL|PASSWORD)$/) bad=1
       if (key !~ /^[A-Za-z_][A-Za-z0-9_]*$/) bad=1
       if (key ~ /^DEX_(UID|GID|SERVICE|DATA_DIR|SECRETS_DIR)$/) bad=1
     }

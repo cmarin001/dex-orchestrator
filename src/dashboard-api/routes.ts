@@ -2,6 +2,7 @@ import { isFill, isClose } from "../logging/types.js";
 import { tradeKey } from "../../schemas/common.js";
 import { equityCurveSchema } from "../../schemas/equity-curve.js";
 import { Hono } from "hono";
+import { getConnInfo } from "@hono/node-server/conninfo";
 import { cors } from "hono/cors";
 import { bodyLimit } from "hono/body-limit";
 import { streamSSE } from "hono/streaming";
@@ -15,7 +16,9 @@ import type { JournalEvent } from "../logging/types.js";
 import { createControl, controlInputs } from "../control/service.js";
 import { ControlConflict } from "../control/commands.js";
 import { changes, reads, type Change } from "../control/phase3.js";
-import { bearerAuth } from "./auth.js";
+import { dashboardAccess, type DashboardAuthEnv } from "./auth.js";
+import { dashboardJwt, sensitiveScope } from "./jwt.js";
+import type { Context } from "hono";
 
 export const dashboardRoutes = new Set(["/health", "/equity", "/journal", "/live-view", "/live-view/stream", "/trades", "/risk-config"]);
 const apiPaths = new Set([...["health","status","positions","equity","audit","candidates","risk"],
@@ -27,16 +30,30 @@ const querySchema = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
 });
 
-export function createDashboardApi(options: { token: string; auditPath: string; riskPath: string;
+export function createDashboardApi(options: { token?: string; jwt?: ReturnType<typeof dashboardJwt>; auditPath: string; riskPath: string;
   initialCents: number; actor?: string; origin?: string; events?: () => Promise<JournalEvent[]>; inboxPath?: string }) {
-  const app = new Hono();
+  const app = new Hono<DashboardAuthEnv>();
+  const requireElevated = (c: Context<DashboardAuthEnv>) => {
+    if (!options.jwt) return;
+    const identity = c.get("dashboardIdentity");
+    if (!identity?.scopes.has(sensitiveScope)) return c.json({ error: "insufficient_scope" }, 403);
+    if (!options.jwt.recentMfa(identity)) return c.json({ error: "recent_mfa_required" }, 403);
+  };
   const control = createControl(options);
   app.use("*", (c, next) => logHttp(dashboardRoutes.has(c.req.path) || apiPaths.has(c.req.path) ? c.req.path : "unknown", c.req.method,
     async () => { await next(); return c.res; }));
   if (options.origin) app.use("*", cors({ origin: options.origin, allowHeaders: ["Authorization", "Content-Type"],
     allowMethods: ["GET", "POST", "OPTIONS"] }));
   app.use("*", async (c, next) => { c.header("Cache-Control", "no-store"); await next(); });
-  app.use("*", bearerAuth(options.token));
+  app.get("/internal/health", async c => {
+    const peer = getConnInfo(c).remote.address;
+    if (peer !== "127.0.0.1" && peer !== "::1" && peer !== "::ffff:127.0.0.1") {
+      return c.json({ error: "not_found" }, 404);
+    }
+    await control.health();
+    return c.json({ status: "ok" });
+  });
+  app.use("*", dashboardAccess(options));
   app.use("*", bodyLimit({ maxSize: 16_384, onError: c => c.json({error:"request_too_large"},413) }));
   const events = options.events ?? (() => readJournal(options.auditPath, true));
   app.onError((error, c) => { log("error", "dashboard.handler_failed", { failure_kind: failureKind(error) }); return c.json({ error: "dashboard_data_unavailable" }, 503); });
@@ -106,7 +123,9 @@ export function createDashboardApi(options: { token: string; auditPath: string; 
   app.post("/risk-config", async c => {
     const risk = riskConfigSchema.safeParse(await c.req.json().catch(() => null));
     if (!risk.success) return c.json({ error: "invalid_risk_config" }, 400);
-    const request = await control.submit("risk", {config:risk.data}, options.actor ?? "operator");
+    const denied = requireElevated(c);
+    if (denied) return denied;
+    const request = await control.submit("risk", {config:risk.data}, c.get("dashboardActor"));
     return c.json({ ...await control.risk(), editable:true, request }, 202);
   });
   for (const name of ["health","status","positions","equity","candidates","risk"] as const) {
@@ -125,9 +144,14 @@ export function createDashboardApi(options: { token: string; auditPath: string; 
       let body: unknown;
       try { body = text ? JSON.parse(text) : {}; }
       catch { return c.json({error:"invalid_json"},400); }
-      if (!controlInputs[name].safeParse(body).success) return c.json({error:"invalid_control"},400);
+      const input = controlInputs[name].safeParse(body);
+      if (!input.success) return c.json({error:"invalid_control"},400);
+      if (name === "risk" || (name === "live-execution" && "enabled" in input.data && input.data.enabled)) {
+        const denied = requireElevated(c);
+        if (denied) return denied;
+      }
       try {
-        const result = await control.submit(name,body,options.actor ?? "operator");
+        const result = await control.submit(name,body,c.get("dashboardActor"));
         return c.json(result,result.state === "queued" ? 202 : 200);
       } catch (error) {
         if (error instanceof ControlConflict) return c.json({error:error.message},409);
@@ -164,8 +188,10 @@ export function createDashboardApi(options: { token: string; auditPath: string; 
         body={request_id,...(action==="set_mode"?{reason}:{}),config} as typeof body;
       }
       if (!changes[action].schema.safeParse(body).success) return c.json({error:"invalid_control"},400);
+      const denied = requireElevated(c);
+      if (denied) return denied;
       try {
-        const result=await control.phase3.mutate(action,body,options.actor ?? "operator");
+        const result=await control.phase3.mutate(action,body,c.get("dashboardActor"));
         return c.json(result,result.state==="queued"?202:200);
       } catch (error) {
         if (error instanceof ControlConflict) return c.json({error:error.message},409);
