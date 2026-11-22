@@ -17,3 +17,9 @@ docs/
 *.md
 !README.md
 !prompts/*.md
+
+tools/derive/
+**/master_mnemonic.txt
+**/bitcoin_mnemonic.txt
+.test-wallet-*/
+.test-wizard-*/

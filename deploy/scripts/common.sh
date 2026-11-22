@@ -4,7 +4,7 @@ repo=/opt/dex-orchestrator
 secrets="$repo/secrets"
 compose_file="$repo/deploy/docker/docker-compose.yml"
 placeholder='<REPLACE_WITH_SECRET>'
-secret_names=(evm_private_key solana_private_key bitcoin_mnemonic openai_api_key dashboard_api_token
+secret_names=(evm_private_key solana_private_key bitcoin_segwit_private_key openai_api_key dashboard_api_token
   deepseek_api_key xai_api_key live_rpc_url zerox_api_key jupiter_api_key goplus_access_token etherscan_api_key
   x_bearer_token reddit_access_token)
 
@@ -38,7 +38,7 @@ required_secrets() {
     printf '%s\n' live_rpc_url
     case ${chain:-base} in
       solana) printf '%s\n' solana_private_key jupiter_api_key ;;
-      bitcoin) printf '%s\n' bitcoin_mnemonic ;;
+      bitcoin) printf '%s\n' bitcoin_segwit_private_key ;;
       *) printf '%s\n' zerox_api_key; [[ $wallet == kms ]] || printf '%s\n' evm_private_key ;;
     esac
   fi

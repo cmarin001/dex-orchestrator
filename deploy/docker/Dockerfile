@@ -23,6 +23,7 @@ COPY --from=build /build/node_modules ./node_modules
 COPY package.json ./
 COPY prompts/ ./prompts/
 COPY config/ ./dist/config/
+COPY deploy/cicd/addresses.json ./dist/deploy/cicd/addresses.json
 RUN ln -s ../prompts dist/prompts
 USER dex
 HEALTHCHECK --interval=30s --timeout=6s --start-period=90s --retries=3 CMD node dist/health.js || exit 1

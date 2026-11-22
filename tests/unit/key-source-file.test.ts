@@ -6,8 +6,6 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { Keypair, SystemProgram, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
-import { generateMnemonic } from "@scure/bip39";
-import { wordlist } from "@scure/bip39/wordlists/english.js";
 import { evmKey, bitcoinKey, solanaKey } from "../../src/wallet/key-source.js";
 import { withSecret, secretText } from "../../src/config/secrets.js";
 
@@ -45,7 +43,7 @@ test("unavailable or invalid file fails without exposing data or using an env fa
   }
 });
 
-test("Solana retains a signer-owned copy and Bitcoin needs an explicit matching derivation",async t=>{
+test("Solana retains a signer-owned copy and Bitcoin requires a derived SegWit key file",async t=>{
   const dir=await mkdtemp(join(tmpdir(),"dex-keys-"));
   t.after(()=>rm(dir,{recursive:true,force:true}));
   const file=join(dir,"wallet");
@@ -61,13 +59,12 @@ test("Solana retains a signer-owned copy and Bitcoin needs an explicit matching 
   await key.sign(signed);
   assert.deepEqual(signed.signatures,expected.signatures);
 
-  const mnemonic=generateMnemonic(wordlist);
-  await writeFile(file,mnemonic+"\n",{mode:0o600});
-  await assert.rejects(bitcoinKey({BITCOIN_MNEMONIC_FILE:file},true),{message:"BITCOIN_KEY_UNAVAILABLE"});
-  const env={BITCOIN_MNEMONIC_FILE:file,BITCOIN_DERIVATION_PATH:"m/84'/1'/0'/0/0"};
-  const wallet=await bitcoinKey(env,true);
-  assert.match(wallet.address,/^tb1q/);
-  assert.equal((await bitcoinKey(env,true)).address,wallet.address);
-  assert.ok(!JSON.stringify(wallet).includes(mnemonic));
-  await assert.rejects(bitcoinKey(env,false),{message:"BITCOIN_KEY_UNAVAILABLE"});
+  await writeFile(file, "not a derived key\n", { mode: 0o600 });
+  await assert.rejects(bitcoinKey({ BITCOIN_KEY_FILE: file }, true), { message: "BITCOIN_KEY_UNAVAILABLE" });
+  await writeFile(file, generatePrivateKey().slice(2) + "\n", { mode: 0o600 });
+  const env = { BITCOIN_KEY_FILE: file };
+  const wallet = await bitcoinKey(env, true);
+  assert.match(wallet.address, /^tb1q/);
+  assert.match((await bitcoinKey(env, false)).address, /^bc1q/);
+  assert.equal((await bitcoinKey(env, true)).address, wallet.address);
 });

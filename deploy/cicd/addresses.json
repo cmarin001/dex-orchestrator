@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "evm": {
+    "address": "0x0da287d1a1e9d6eb1b2c0ea19cc24a2017a28c29",
+    "derivation_path": "m/44'/60'/0'/0/0",
+    "chains": {
+      "ethereum": "fundable",
+      "base": "fundable",
+      "bsc": "fundable",
+      "polygon": "fundable",
+      "robinhood": "tracked",
+      "hyperevm": "tracked",
+      "arc": "tracked"
+    }
+  },
+  "solana": {
+    "address": "5UB4r3pAgeMtkLpUNVmZ8TPpdDmqx6178b21K1VuUTbC",
+    "derivation_path": null,
+    "candidate_paths": ["m/44'/501'/0'/0'", "m/44'/501'/0'", "m/44'/501'/0'/0'/0'"],
+    "tier": "fundable"
+  },
+  "bitcoin_segwit": {
+    "address": "bc1qywwzmsl4qc0m94fauxk4cjz33f44gl9yfqueq0",
+    "derivation_path": "m/84'/0'/0'/0/0",
+    "tier": "fundable"
+  },
+  "bitcoin_taproot": {
+    "address": "bc1p69wuy6vnccpr8zgp47a05a397wwlje4k67fqa9mwr0y8xqmhevqsn8s7zx",
+    "derivation_path": "m/86'/0'/0'/0/0",
+    "tier": "validation_only"
+  }
+}
