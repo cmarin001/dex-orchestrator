@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { formatUnits } from "viem";
 import { z } from "zod";
+import { elapsed, failureKind, log, startTimer } from "../logging/operational.js";
 
 const tier = z.enum(["fundable", "validation_only", "tracked"]);
 const account = z.object({ address: z.string(), derivation_path: z.string(), tier });
@@ -24,12 +25,16 @@ function rpcUrl(value: unknown) {
   return url;
 }
 
+class WalletRpcFailure extends Error {
+  constructor(readonly reason: string, readonly status?: number) { super(reason); }
+}
+
 async function fetchJson(url: URL, body?: object) {
   const response = await fetch(url, {
     signal: AbortSignal.timeout(3000), redirect: "error",
     ...(body && { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
   });
-  if (!response.ok) throw new Error("Wallet balance unavailable");
+  if (!response.ok) throw new WalletRpcFailure("provider_http_rejected", response.status);
   return response.json() as Promise<unknown>;
 }
 
@@ -37,9 +42,18 @@ const endpointSchema = z.union([z.string(), z.strictObject({ url: z.string(), ch
 type Endpoint = z.infer<typeof endpointSchema>;
 
 async function nativeBalance(chain: string, address: string, endpoint: Endpoint | undefined) {
-  if (endpoint === undefined) return null;
+  const started = startTimer();
+  const method = chain.startsWith("bitcoin_") ? "esplora_address_stats" : chain === "solana" ? "solana_getBalance" : "evm_chainId_then_getBalance";
+  function result(balance: string | null, reason: string, level: "info" | "warn" = "info", status?: number) {
+    log(level, "wallet.balance", { component: "dashboard_api", stage: method, chain,
+      outcome: balance === null ? "unavailable" : "ok", reason, status, duration_ms: elapsed(started) });
+    return balance;
+  }
+  if (endpoint === undefined) return result(null, "endpoint_not_configured");
+  let stage = "endpoint_validation";
   try {
     const url = rpcUrl(typeof endpoint === "string" ? endpoint : endpoint.url);
+    stage = "balance_request";
     if (chain.startsWith("bitcoin_")) {
       const summary = z.object({
         funded_txo_sum: z.number().int().nonnegative(),
@@ -47,21 +61,29 @@ async function nativeBalance(chain: string, address: string, endpoint: Endpoint 
       });
       url.pathname = url.pathname.replace(/\/$/, "") + "/address/" + encodeURIComponent(address);
       const data = z.object({ chain_stats: summary }).parse(await fetchJson(url)).chain_stats;
-      return formatUnits(BigInt(data.funded_txo_sum) - BigInt(data.spent_txo_sum), 8);
+      return result(formatUnits(BigInt(data.funded_txo_sum) - BigInt(data.spent_txo_sum), 8), "confirmed_native_balance");
     }
     const call = async (method: string, params: unknown[] = []) => {
       const response = await fetchJson(url, { jsonrpc: "2.0", id: 1, method, params });
-      return z.object({ result: z.unknown() }).parse(response).result;
+      const parsed = z.object({ result: z.unknown(), error: z.unknown().optional() }).parse(response);
+      if (parsed.error !== undefined) throw new WalletRpcFailure("provider_rpc_rejected");
+      return parsed.result;
     };
     if (chain === "solana") {
       const data = z.object({ value: z.number().int().nonnegative() }).parse(await call("getBalance", [address, { commitment: "finalized" }]));
-      return formatUnits(BigInt(data.value), 9);
+      return result(formatUnits(BigInt(data.value), 9), "finalized_native_balance");
     }
     const chainId = evmChains[chain] ?? (typeof endpoint === "object" ? endpoint.chain_id : undefined);
-    if (!chainId || await call("eth_chainId") !== chainId) return null;
+    if (!chainId) return result(null, "expected_chain_id_not_configured", "warn");
+    stage = "chain_id_check";
+    if (await call("eth_chainId") !== chainId) return result(null, "rpc_chain_id_mismatch", "warn");
+    stage = "balance_request";
     const hex = z.string().regex(/^0x[0-9a-f]+$/i).parse(await call("eth_getBalance", [address, "latest"]));
-    return formatUnits(BigInt(hex), 18);
-  } catch { return null; }
+    return result(formatUnits(BigInt(hex), 18), "native_balance_read");
+  } catch (error) {
+    if (error instanceof WalletRpcFailure) return result(null, stage + "_" + error.reason, "warn", error.status);
+    return result(null, stage === "endpoint_validation" ? "invalid_endpoint_configuration" : stage + "_" + failureKind(error), "warn");
+  }
 }
 
 function matchingProvisioning(expected: Manifest, provisioned: Manifest | undefined) {
@@ -79,10 +101,20 @@ export function walletOverview(auditPath: string) {
   let asOf = 0;
 
   async function read() {
+    const started = startTimer();
     const expected = await manifest();
-    const provisioned = await readFile(metadata, "utf8")
-      .then(value => manifestSchema.parse(JSON.parse(value))).catch(() => undefined);
+    let provisioned: Manifest | undefined;
+    let reason = "manifest_and_solana_path_matched";
+    try { provisioned = manifestSchema.parse(JSON.parse(await readFile(metadata, "utf8"))); }
+    catch (error) {
+      reason = (error as NodeJS.ErrnoException).code === "ENOENT" ? "provisioning_record_missing" : "provisioning_record_invalid_or_unreadable";
+    }
     const verified = matchingProvisioning(expected, provisioned);
+    if (provisioned && !verified) reason = "provisioning_record_mismatch";
+    log(verified || reason === "provisioning_record_missing" ? "info" : "warn", "wallet.funding_gate", {
+      component: "dashboard_api", stage: "manifest_and_provisioning_record_comparison",
+      outcome: verified ? "fundable_tiers_verified" : "funding_blocked", reason, duration_ms: elapsed(started),
+    });
     const raw = process.env.WALLET_BALANCE_ENDPOINTS;
     const endpoints = raw ? z.record(z.string(), endpointSchema).parse(JSON.parse(raw)) : {};
     const wallets = Object.entries(expected.evm.chains).map(([chain, tier]) =>
@@ -96,10 +128,21 @@ export function walletOverview(auditPath: string) {
   }
 
   return async () => {
+    const started = startTimer();
+    const cached = !!snapshot && Date.now() - asOf < 30_000;
     if (!snapshot || Date.now() - asOf >= 30_000) {
       asOf = Date.now();
       snapshot = read().catch(error => { snapshot = undefined; throw error; });
     }
-    return { wallets: await snapshot };
+    try {
+      const wallets = await snapshot;
+      log("info", "wallet.overview", { component: "dashboard_api", stage: "wallet_snapshot", outcome: "ok",
+        reason: cached ? "cache_reused" : "snapshot_refreshed", count: wallets.length, duration_ms: elapsed(started) });
+      return { wallets };
+    } catch (error) {
+      log("error", "wallet.overview", { component: "dashboard_api", stage: "wallet_snapshot", outcome: "failed",
+        reason: "wallet_snapshot_unavailable", failure_kind: failureKind(error), duration_ms: elapsed(started) });
+      throw error;
+    }
   };
 }

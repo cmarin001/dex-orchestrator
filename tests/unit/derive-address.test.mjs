@@ -108,6 +108,7 @@ test("wizard validates before writing, requires explicit overwrite, and keeps th
   const bin = join(tmp, "bin");
   for (const path of [cicd + "/lib", tools, bin]) await mkdir(path, { recursive: true });
   await copyFile(source, join(cicd, "lib/derive-address.mjs"));
+  await copyFile(join(base, "deploy/cicd/lib/wallet-log.sh"), join(cicd, "lib/wallet-log.sh"));
   await symlink(join(base, "node_modules"), join(tools, "node_modules"));
   const setup = await readFile(join(base, "deploy/cicd/setup-secrets.sh"), "utf8");
   if (process.getuid() !== 0) {
@@ -132,6 +133,7 @@ test("wizard validates before writing, requires explicit overwrite, and keeps th
   await writeManifest();
   for (const [name, content] of Object.entries({
     docker: "exit 0",
+    logger: "exit 0",
     runuser: 'shift 3; if [[ $1 != bash || $2 == -c ]]; then exec "$@"; fi',
     whiptail: 'case " $* " in *" --passwordbox "*) IFS= read -r phrase; printf "%s" "$phrase" >&2 ;; *" --inputbox "*) printf "%s" "${CONFIRM:-}" >&2 ;; esac',
   })) await writeFile(join(bin, name), "#!/bin/bash\n" + content + "\n", { mode: 0o700 });
@@ -152,7 +154,13 @@ test("wizard validates before writing, requires explicit overwrite, and keeps th
   for (const name of names) await assert.rejects(stat(join(tmp, "secrets", name)), { code: "ENOENT" });
   fixtureManifest.evm.address = evmAddress;
   await writeManifest();
-  assert.equal(runWizard([]).status, 0);
+  const provisioned = runWizard([]);
+  assert.equal(provisioned.status, 0);
+  const events = provisioned.stderr.split("\n").filter(line => line.startsWith("{")).map(JSON.parse);
+  assert.ok(events.some(event => event.reason === "three_signers_and_manifest_published"));
+  assert.ok(events.some(event => event.reason === "slip10_ed25519_match"));
+  assert.equal(new Set(events.map(event => event.operation_id)).size, 1);
+  assert.ok(events.every(event => event.at && event.component && event.duration_ms >= 0));
   const snapshots = await Promise.all(names.map(name => readFile(join(tmp, "secrets", name))));
   try {
     assert.equal(runWizard([]).status, 1);

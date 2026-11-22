@@ -18,6 +18,15 @@ const defaultManifest = () => readFile(manifestPath, "utf8").then(JSON.parse);
 const hex = bytes => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("hex");
 const hmac = (key, bytes) => createHmac("sha512", key).update(bytes).digest();
 const argsError = "Invalid validator arguments.";
+const operationId = /^[a-f0-9-]{36}$/.test(process.env.DEX_WALLET_OPERATION_ID ?? "")
+  ? process.env.DEX_WALLET_OPERATION_ID : undefined;
+const validatorStarted = performance.now();
+function trace(level, stage, outcome, reason, kind) {
+  if (!operationId) return;
+  console.error(JSON.stringify({ at: new Date().toISOString(), level, event: "wallet.derivation",
+    component: "offline_validator", operation_id: operationId, stage, outcome, reason, kind,
+    duration_ms: Math.round(performance.now() - validatorStarted) }));
+}
 
 function slip10(seed, path) {
   if (!/^m(?:\/[0-9]+')+$/.test(path)) throw Error(argsError);
@@ -81,9 +90,13 @@ async function probeSolana(seed, manifest) {
   const results = [];
   for (const path of manifest.solana.candidate_paths) {
     const { address } = await derive(seed, "solana", path);
-    if (address === manifest.solana.address) return { path, results };
+    if (address === manifest.solana.address) {
+      trace("info", "address_check", "ok", "slip10_ed25519_match", "solana");
+      return { path, results };
+    }
     results.push(path + " " + address);
   }
+  trace("warn", "address_check", "failed", "slip10_ed25519_no_matching_path", "solana");
   return { results };
 }
 
@@ -102,6 +115,8 @@ async function validate(seed, manifest) {
     } else {
       const { address } = await derive(seed, kind, manifest[kind].derivation_path);
       matched = same(kind, address, manifest[kind].address);
+      trace(matched ? "info" : "warn", "address_check", matched ? "ok" : "failed",
+        matched ? "manifest_address_matched" : "manifest_address_mismatch", kind);
     }
     if (!matched) valid = false;
     console.log((matched ? "OK " : "FAIL ") + manifest[kind].address);
@@ -165,12 +180,19 @@ async function main([mode, ...args]) {
   try {
     if (mode === "check-secret") {
       const address = await signerAddress(kind, input);
-      if (!same(kind, address, manifest[kind].address)) throw Error("Public address mismatch.");
+      if (!same(kind, address, manifest[kind].address)) {
+        trace("warn", "signer_check", "failed", "manifest_address_mismatch", kind);
+        throw Error("Public address mismatch.");
+      }
+      trace("info", "signer_check", "ok", "manifest_address_matched", kind);
       console.log("OK " + address);
       return;
     }
     const mnemonic = input.toString("utf8").trim().replace(/\s+/g, " ");
-    if (!validateMnemonic(mnemonic, wordlist)) throw Error("Invalid BIP39 phrase.");
+    if (!validateMnemonic(mnemonic, wordlist)) {
+      trace("warn", "input_check", "failed", "invalid_bip39_input");
+      throw Error("Invalid BIP39 phrase.");
+    }
     seed = mnemonicToSeedSync(mnemonic);
     if (mode === "validate") {
       if (!await validate(seed, manifest)) process.exitCode = 1;
@@ -197,7 +219,10 @@ async function main([mode, ...args]) {
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   try { await main(process.argv.slice(2)); }
-  catch {
+  catch (error) {
+    const reason = ({ EEXIST: "destination_exists", EACCES: "permission_denied", ENOSPC: "disk_full",
+      ELOOP: "unsafe_destination", ENOENT: "input_or_destination_missing" })[error?.code] ?? "validation_or_write_failed";
+    trace("error", "validator", "failed", reason);
     console.error("Wallet validation failed. Check input, mode, file permissions, and manifest.");
     process.exitCode = 1;
   }

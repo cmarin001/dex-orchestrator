@@ -102,3 +102,22 @@ GitHub, command arguments, logs, environment variables, and image builds.
 Use the hidden console prompt for the phrase. Any future browser-based
 setup needs a separate reviewed design. A localhost-bound, short-lived
 setup behind an SSH tunnel has more exposure than this console wizard.
+
+## Follow the operation
+
+On the droplet, use `sudo journalctl -t tradekeel-wallet -f -o cat` to follow
+provisioning and verification. Filter by `operation_id` to follow one run.
+The wizard's stderr carries more detailed offline derivation results under
+the same ID. Each event includes a timestamp, component, stage, outcome,
+reason code, and elapsed time. The verifier reports individual signer-file
+failures, including permissions or ownership and address mismatches.
+
+For the Wallets endpoint, read the dashboard API container logs and filter
+for `wallet.overview`, `wallet.funding_gate`, or `wallet.balance`. The events
+distinguish a missing provisioning record, a mismatch, missing RPC setup,
+a wrong chain ID, and request failures. Use the response's `X-Request-Id`
+to join the API logs to the BFF's `wallet.proxy` event. Clipboard actions
+happen on the device and are visible in the browser console.
+
+Logs omit recovery phrases, private keys, balances, wallet addresses,
+cookies, raw request bodies, and raw provider URLs.
