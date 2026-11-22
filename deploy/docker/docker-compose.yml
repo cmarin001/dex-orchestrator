@@ -1,7 +1,7 @@
 name: dex-orchestrator
 
 x-service: &service
-  image: dex-orchestrator:local
+  image: ${IMAGE_TAG:-dex-orchestrator:local}
   user: "${DEX_UID:-1000}:${DEX_GID:-1000}"
   restart: unless-stopped
   init: true
@@ -60,13 +60,13 @@ services:
   dashboard:
     <<: *service
     command: [node, dist/src/dashboard-api/server.js]
+    network_mode: host
     environment:
       DEX_SERVICE: dashboard
       DASHBOARD_API_TOKEN_FILE: /run/secrets/dashboard_api_token
-      DASHBOARD_API_HOST: 0.0.0.0
+      DASHBOARD_API_HOST: 127.0.0.1
       DASHBOARD_API_PORT: "8787"
       CONTROL_INBOX_PATH: /app/data/controls
-    ports: ["127.0.0.1:8787:8787"]
     volumes:
       - "${DEX_DATA_DIR:-../../data}:/app/data:ro"
       - "${DEX_DATA_DIR:-../../data}/controls:/app/data/controls"

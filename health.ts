@@ -28,6 +28,12 @@ async function check() {
     return true;
   }
   const svc=process.env.DEX_SERVICE ?? "worker";
+  if (svc === "dashboard") {
+    const url = "http://127.0.0.1:" + (process.env.DASHBOARD_API_PORT ?? "8787") + "/api/v1/health";
+    const response = await fetch(url, { signal: AbortSignal.timeout(4000), redirect: "error" });
+    await response.body?.cancel();
+    return response.ok;
+  }
   if (svc==="worker" && process.argv[2]===undefined) {
     const journal=await readJournal(process.env.AUDIT_PATH ?? "data/audit.jsonl",true);
     const lifecycle=journal.findLast(event=>event.stage==="worker_lifecycle");

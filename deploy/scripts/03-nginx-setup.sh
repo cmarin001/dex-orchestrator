@@ -2,7 +2,7 @@
 set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 require_root
-read -rp 'Domain: ' domain
+domain=dex-orchestrator.best
 read -rp 'ACME contact email: ' email
 valid_domain "$domain" || die 'Provide a valid DNS hostname.'
 [[ $email =~ ^[A-Za-z0-9._+%-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]] || die 'Provide a valid email address.'

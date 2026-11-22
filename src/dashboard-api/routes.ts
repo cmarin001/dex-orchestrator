@@ -31,7 +31,7 @@ const querySchema = z.object({
 });
 
 export function createDashboardApi(options: { token?: string; jwt?: ReturnType<typeof dashboardJwt>; auditPath: string; riskPath: string;
-  initialCents: number; actor?: string; origin?: string; events?: () => Promise<JournalEvent[]>; inboxPath?: string }) {
+  initialCents: number; deployHealth?: { version: string; intervalMs: number }; actor?: string; origin?: string; events?: () => Promise<JournalEvent[]>; inboxPath?: string }) {
   const app = new Hono<DashboardAuthEnv>();
   const requireElevated = (c: Context<DashboardAuthEnv>) => {
     if (!options.jwt) return;
@@ -45,9 +45,31 @@ export function createDashboardApi(options: { token?: string; jwt?: ReturnType<t
   if (options.origin) app.use("*", cors({ origin: options.origin, allowHeaders: ["Authorization", "Content-Type"],
     allowMethods: ["GET", "POST", "OPTIONS"] }));
   app.use("*", async (c, next) => { c.header("Cache-Control", "no-store"); await next(); });
-  app.get("/internal/health", async c => {
+  const events = options.events ?? (() => readJournal(options.auditPath, true));
+  const loopback = (c: Context<DashboardAuthEnv>) => {
     const peer = getConnInfo(c).remote.address;
-    if (peer !== "127.0.0.1" && peer !== "::1" && peer !== "::ffff:127.0.0.1") {
+    return peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1";
+  };
+  app.get("/api/v1/health", async (c, next) => {
+    if (!options.deployHealth || c.req.header("Authorization") !== undefined ||
+        c.req.header("X-Forwarded-For") !== undefined || c.req.header("X-Real-IP") !== undefined ||
+        c.req.header("Forwarded") !== undefined || c.req.header("X-Dex-Proxy") !== undefined || !loopback(c)) return next();
+    let last_cycle_at: string | null = null;
+    const loop_interval_sec = options.deployHealth.intervalMs / 1000;
+    let journal_readable = false;
+    try {
+      await control.health();
+      const cycle = (await events()).findLast(event => event.stage === "worker_cycle");
+      last_cycle_at = cycle?.at ?? null;
+      journal_readable = true;
+    } catch (error) {
+      log("warn", "dashboard.deploy_probe_failed", {failure_kind:failureKind(error)});
+    }
+    return c.json({ ok: journal_readable, version: options.deployHealth.version,
+      last_cycle_at, journal_readable, loop_interval_sec }, journal_readable ? 200 : 503);
+  });
+  app.get("/internal/health", async c => {
+    if (!loopback(c)) {
       return c.json({ error: "not_found" }, 404);
     }
     await control.health();
@@ -55,7 +77,6 @@ export function createDashboardApi(options: { token?: string; jwt?: ReturnType<t
   });
   app.use("*", dashboardAccess(options));
   app.use("*", bodyLimit({ maxSize: 16_384, onError: c => c.json({error:"request_too_large"},413) }));
-  const events = options.events ?? (() => readJournal(options.auditPath, true));
   app.onError((error, c) => { log("error", "dashboard.handler_failed", { failure_kind: failureKind(error) }); return c.json({ error: "dashboard_data_unavailable" }, 503); });
   app.get("/health", c => c.json({ status: "ok", mode: "paper" }));
   app.get("/journal", async c => {

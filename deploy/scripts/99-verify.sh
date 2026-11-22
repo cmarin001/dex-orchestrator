@@ -182,7 +182,13 @@ check 'UFW ingress allowlist' firewall_ports
 check 'Fail2ban SSH jail' fail2ban-client status sshd >/dev/null
 check 'Three Compose services running' services_running
 check 'Worker publishes no ports' published_ports worker
-check 'Dashboard bound only on loopback' published_ports dashboard 8787
+dashboard_loopback() {
+  local id
+  id=$(compose ps -q dashboard) && [[ -n $id ]] &&
+    [[ $(docker inspect --format '{{.HostConfig.NetworkMode}}' "$id") == host ]] &&
+    [[ $(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' "$id" | grep -x DASHBOARD_API_HOST=127.0.0.1) == DASHBOARD_API_HOST=127.0.0.1 ]]
+}
+check 'Dashboard bound only on loopback' dashboard_loopback
 check 'MCP bound only on loopback' published_ports mcp 3001
 check 'Recent external checks cover SSH, blocked ports, TLS and HSTS' verify_outside
 if auth_unauthenticated; then

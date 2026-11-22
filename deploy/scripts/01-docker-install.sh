@@ -16,6 +16,6 @@ gpg --batch --dearmor --output "$tmp/docker.gpg" "$tmp/docker.asc"
 install -m 0644 "$tmp/docker.gpg" /etc/apt/keyrings/docker.gpg
 printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu %s stable\n'   "$(dpkg --print-architecture)" "$VERSION_CODENAME" >/etc/apt/sources.list.d/docker.list
 apt-get update
-apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin docker-buildx-plugin jq
 systemctl enable --now docker
 printf 'Anyone in the docker group has root-equivalent access. Use sudo docker for deploy commands.\n'
