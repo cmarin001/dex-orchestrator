@@ -24,6 +24,7 @@ const api = createDashboardApi({
   inboxPath: process.env.CONTROL_INBOX_PATH,
   initialCents: Number(process.env.INITIAL_EQUITY_CENTS ?? 100000),
   origin: process.env.DASHBOARD_ORIGIN,
+  deployHealth: { version: env.BUILD_VERSION ?? "dev", intervalMs: Number(env.LOOP_INTERVAL_MS ?? 90_000) },
   actor: process.env.DASHBOARD_OPERATOR || "operator",
 });
 const server = serve({ fetch: api.fetch, hostname: process.env.DASHBOARD_API_HOST ?? "127.0.0.1", port: Number(process.env.DASHBOARD_API_PORT ?? 8787) },

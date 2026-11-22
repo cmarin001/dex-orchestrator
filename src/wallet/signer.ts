@@ -15,7 +15,7 @@ export interface Signer {
   chain: WalletChain;
   address(): Promise<string>;
   simulate(intent: TransactionIntent): Promise<SimulationResult>;
-  signAndSend(intent: TransactionIntent): Promise<TxReceipt>;
+  signAndSend(intent: TransactionIntent, allowed?: () => boolean): Promise<TxReceipt>;
   reconcile(intent: TransactionIntent): Promise<TxReceipt | null>;
 }
 
@@ -73,7 +73,7 @@ export function createSigner(adapter: ChainAdapter, caps: WalletConfig, audit: A
     }
     return intent;
   };
-  async function execute(raw: TransactionIntent, recoverOnly: boolean): Promise<TxReceipt | null> {
+  async function execute(raw: TransactionIntent, recoverOnly: boolean, allowed?: () => boolean): Promise<TxReceipt | null> {
     const intent = parse(raw);
     const hash = createHash("sha256").update(JSON.stringify(intent)).digest("hex");
     const run_id = intent.run_id;
@@ -131,6 +131,7 @@ export function createSigner(adapter: ChainAdapter, caps: WalletConfig, audit: A
       const identifier = identifierSchema.parse({id:signed.id,expires_at_height:signed.expires_at_height});
       if (active.some(attempt => attempt.id === identifier.id)) throw new Error("DUPLICATE_REPLACEMENT");
       if (!enabled()) throw new Error("LIVE_EXECUTION_DISABLED");
+      if (allowed?.() === false) throw new Error("DEPLOYMENT_PAUSED");
       await record({event:"signed",run_id,identifier});
       await broadcastSigned(signed, bytes => adapter.broadcast(bytes));
     }
@@ -151,17 +152,17 @@ export function createSigner(adapter: ChainAdapter, caps: WalletConfig, audit: A
     address: () => adapter.address(),
     simulate: async intent => (await adapter.prepare(parse(intent))).simulation,
     reconcile(intent) { return enqueue(intent,true); },
-    async signAndSend(intent) { return (await enqueue(intent,false))!; },
+    async signAndSend(intent, allowed) { return (await enqueue(intent,false,allowed))!; },
   };
-  function enqueue(intent: TransactionIntent, recoverOnly: boolean) {
+  function enqueue(intent: TransactionIntent, recoverOnly: boolean, allowed?: () => boolean) {
     const result = queue.then(async () => {
       const initial = !reservations.get(intent.run_id)?.attempts.length;
-      const receipt = await execute(intent,recoverOnly);
+      const receipt = await execute(intent,recoverOnly,allowed);
       if (recoverOnly || !initial || !adapter.replace || receipt?.status !== "pending") return receipt;
-      try { return await execute(intent,false); }
+      try { return await execute(intent,false,allowed); }
       catch (error) {
         if (error instanceof Error && ["FEE_LIMIT_EXCEEDED","INTENT_EXPIRED",
-          "DAILY_LIMIT_EXCEEDED","PER_TRADE_LIMIT_EXCEEDED","BITCOIN_MEMPOOL_REJECTED"].includes(error.message)) return receipt;
+          "DAILY_LIMIT_EXCEEDED","PER_TRADE_LIMIT_EXCEEDED","BITCOIN_MEMPOOL_REJECTED","DEPLOYMENT_PAUSED"].includes(error.message)) return receipt;
         throw error;
       }
     });

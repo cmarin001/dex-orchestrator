@@ -19,10 +19,10 @@ const orderSchema = z.strictObject({
 type Order = z.infer<typeof orderSchema>;
 const walletNotSent = new Set(["INTENT_EXPIRED","PER_TRADE_LIMIT_EXCEEDED","DAILY_LIMIT_EXCEEDED",
   "SIMULATION_FAILED","FEE_LIMIT_EXCEEDED","QUOTE_UNAVAILABLE","QUOTE_MISMATCH","ROUTE_MISMATCH",
-  "UNRECONCILED_TRANSACTION","LIVE_EXECUTION_DISABLED","UNAPPROVED_PROGRAM","SIMULATION_TOKEN_MISMATCH","RPC_CHAIN_MISMATCH"]);
+  "UNRECONCILED_TRANSACTION","LIVE_EXECUTION_DISABLED","DEPLOYMENT_PAUSED","UNAPPROVED_PROGRAM","SIMULATION_TOKEN_MISMATCH","RPC_CHAIN_MISMATCH"]);
 
 type Settings = {stable:string; stableDecimals:number; usdPerUnit:number; decimals:Map<string,number>};
-type Shared = {onClose?: (chain:string,pnl:number)=>void; enabled: () => boolean; config:WalletConfig; signer:Signer; audit:Audit; journal:JournalEvent[]; positions:Positions; equity:Equity} & Settings;
+type Shared = {entryAllowed?: () => boolean; onClose?: (chain:string,pnl:number)=>void; enabled: () => boolean; config:WalletConfig; signer:Signer; audit:Audit; journal:JournalEvent[]; positions:Positions; equity:Equity} & Settings;
 
 export function createLiveExecution(settings: Shared) {
   const {config,signer,audit,positions,equity,stable,stableDecimals,usdPerUnit,decimals} = settings;
@@ -43,7 +43,7 @@ export function createLiveExecution(settings: Shared) {
   }
   async function execute(order: Order, recoverOnly = false) {
     const {intent,identity,position,action} = order;
-    const receipt = await (recoverOnly ? signer.reconcile(intent) : signer.signAndSend(intent)).catch(async (error: unknown) => {
+    const receipt = await (recoverOnly ? signer.reconcile(intent) : signer.signAndSend(intent, action === "entry" ? settings.entryAllowed : undefined)).catch(async (error: unknown) => {
       if (!(error instanceof Error) || !walletNotSent.has(error.message)) throw new SystemError("Live execution requires reconciliation");
       if (error.message === "UNRECONCILED_TRANSACTION") return null;
       await audit({identity,stage:"live_settled",status:"failed",detail:{reason:error.message},gaps:[error.message]});
@@ -86,7 +86,7 @@ export function createLiveExecution(settings: Shared) {
     return true;
   }
   async function submit(order: Order) {
-    if (!settings.enabled() || pending.size) return false;
+    if (!settings.enabled() || pending.size || (order.action === "entry" && settings.entryAllowed?.() === false)) return false;
     const validated = orderSchema.parse(order);
     await audit({identity:order.identity,stage:"live_intent",status:"ok",detail:validated,gaps:[]});
     pending.set(order.intent.run_id,validated);

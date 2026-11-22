@@ -16,6 +16,7 @@ import { sizePosition } from "../state/equity.js";
 import type { Equity } from "../state/equity.js";
 import type { Positions } from "../state/positions.js";
 import type { LiveExecution } from "../wallet/live.js";
+import type { deploymentGate } from "./deployment.js";
 import type { ModeRuntime } from "../mode/runtime.js";
 import { failureKind, log } from "../logging/operational.js";
 import { CandidateError } from "./errors.js";
@@ -38,6 +39,7 @@ export interface Pipeline {
   exitMode?: "profit_only" | "stop_loss";
   live?: LiveExecution;
   mode?: ModeRuntime;
+  deployment?: ReturnType<typeof deploymentGate>;
 }
 
 export async function runCandidate(input: Merged, dependencies: Pipeline, ranked?: ScannerRow): Promise<"paper_fill" | "live_fill" | "skipped"> {
@@ -159,6 +161,8 @@ export async function runCandidate(input: Merged, dependencies: Pipeline, ranked
   if (!fresh() || signal?.aborted) return skip("expired_before_fill");
   if (dependencies.mode && strategy && !await dependencies.mode.authorize(input,strategy)) return skip("awaiting_strategy_or_approval");
   if (!fresh() || signal?.aborted) return skip("expired_before_fill");
+
+  if (dependencies.deployment?.paused()) return skip("deployment_paused");
 
   const position = { ...identity, cost_cents: costCents, entry_price_usd: quote.value,
     ...(strategy?.signal ? { strategy_id:strategy.signal.strategyId } : {}),

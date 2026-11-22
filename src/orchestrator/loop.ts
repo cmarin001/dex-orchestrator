@@ -38,6 +38,7 @@ export async function runLoop(
     const started = Date.now();
     let delay = options.intervalMs;
     let breakerUntil: number | null = null;
+    await pipeline.deployment?.acknowledge();
     await controls?.drain(pipeline.positions);
     await pipeline.mode?.beginCycle(started);
     await pipeline.live?.reconcile();
@@ -69,7 +70,7 @@ export async function runLoop(
       return [item];
     });
     let rankingError: unknown;
-    if (feed[0]) {
+    if (feed[0] && !pipeline.deployment?.paused()) {
       try {
         const rows = await scanner(
           pipeline.call,
@@ -111,7 +112,7 @@ export async function runLoop(
           });
           if (rankingError && !merged.stale) throw rankingError;
           const row = ranking?.get(targetKey(identity));
-          if (controls?.paused) return;
+          if (controls?.paused || pipeline.deployment?.paused()) return;
           const outcome = await runCandidate(
             merged,
             { ...pipeline, signal, rejectRecon: (target) => cache.reject(target) },
@@ -152,7 +153,7 @@ export async function runLoop(
       }
     }
     if (controls) await pipeline.audit({stage:"worker_cycle",status:"ok",gaps:[],
-      detail:{watched:targets,breaker_until:breakerUntil}});
+      detail:{watched:targets,breaker_until:breakerUntil,loop_interval_sec:options.intervalMs / 1000}});
     log("debug", "loop.cycle", { count: targets.length, duration_ms: elapsed(cycleStarted) });
     await sleep(Math.max(0, delay - (Date.now() - started)), undefined, { signal }).catch((error: unknown) => {
       if (!signal.aborted) throw error;

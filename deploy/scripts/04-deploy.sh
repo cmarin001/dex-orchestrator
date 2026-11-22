@@ -3,6 +3,7 @@ set -euo pipefail
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 require_deploy
 cd "$repo"
+[[ ! -e data/.cicd-enabled ]] || die "Use deploy/cicd/deploy.sh on this CI-managed host."
 [[ -f .env && ! -L .env && $(stat -c %a .env) == 600 ]] || die 'Install a real .env file with mode 600 first.'
 case "$(setting OPERATING_MODE)" in
   strategies|human|ai|hybrid) ;;
