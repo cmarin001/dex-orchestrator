@@ -6,6 +6,8 @@ import { normalizeAddress, tradeKey } from "../../schemas/common.js";
 import { defaultRisk } from "../../schemas/risk-config.js";
 import { equityCurveSchema } from "../../schemas/equity-curve.js";
 import { chartPointSchema } from "../../schemas/live-view.js";
+import { projectTradeHistory } from "../logging/projections/trade-history.js";
+import { modeConfigSchema } from "../../schemas/mode-config.js";
 import { readJournal } from "../logging/logger.js";
 import type { JournalEvent } from "../logging/types.js";
 import type { Position } from "../state/positions.js";
@@ -49,23 +51,75 @@ function executionMode(journal: JournalEvent[]) {
   return z.object({mode:z.enum(["paper","live"])}).safeParse(event?.detail).data?.mode ?? "paper";
 }
 
+const cycleData = z.object({
+  breaker_until: z.number().nullable().optional(),
+  loop_interval_sec: z.number().positive().optional(),
+  duration_ms: z.number().nonnegative().optional(),
+});
+
+function workerState(journal: JournalEvent[]) {
+  const lifecycle = journal.filter(e => e.stage === "worker_lifecycle" && e.status === "ok");
+  const cycle = journal.findLast(e => e.stage === "worker_cycle" && e.status === "ok");
+  const last = lifecycle.at(-1);
+  return { lifecycle, cycle, state: last?.detail === "running" || last?.detail === "stopped" ? last.detail : "unknown" };
+}
+
+function latencySummary(samples: number[]) {
+  const sorted = samples.sort((a, b) => a - b);
+  const percentile = (p: number) => sorted[Math.ceil(sorted.length * p) - 1] ?? null;
+  return { p50: percentile(.5), p95: percentile(.95), p99: percentile(.99) };
+}
+
 export function createControl(options: { auditPath: string; riskPath: string; inboxPath?: string;
-  events?: () => Promise<JournalEvent[]>; budgetPath?:string }) {
+  events?: () => Promise<JournalEvent[]>; budgetPath?:string; deployHealth?: { version: string; intervalMs: number } }) {
   const events = options.events ?? (() => readJournal(options.auditPath, true));
   const inbox = new Inbox(options.inboxPath ?? options.auditPath + ".controls");
   const risk = async () => (await readRisk(options.riskPath)) ?? { config: defaultRisk, as_of: null, actor: null };
   const phase3=createPhase3Api(events,inbox,options.budgetPath ?? process.env.BUDGET_PATH ?? join(dirname(options.auditPath),"budget.jsonl"));
+  async function readableJournal() {
+    if (!options.events) await access(options.auditPath);
+    return events();
+  }
   return {
     phase3,
     async health() {
-      if (!options.events) await access(options.auditPath);
-      const journal = await events();
-      return { status: "ok", mode: executionMode(journal), journal_readable: true };
+      const journal = await readableJournal();
+      return { status: "ok", ok: true, mode: executionMode(journal), journal_readable: true,
+        version: options.deployHealth?.version ?? null, last_cycle_at: workerState(journal).cycle?.at ?? null,
+        loop_interval_sec: options.deployHealth ? options.deployHealth.intervalMs / 1000 : null };
+    },
+    async systemHealth() {
+      const journal = await readableJournal();
+      const { lifecycle, cycle, state } = workerState(journal);
+      const now = Date.now();
+      const starts = lifecycle.filter(e => e.detail === "running");
+      const durations = journal.filter(e => e.stage === "worker_cycle" && e.status === "ok").slice(-50)
+        .flatMap(e => {
+          const duration = cycleData.safeParse(e.detail).data?.duration_ms;
+          return duration === undefined ? [] : [duration];
+        });
+      return {
+        as_of: new Date(now).toISOString(),
+        worker: { state, last_cycle_at: cycle?.at ?? null,
+          uptime_sec: state === "running" && starts.length ? Math.max(0, Math.floor((now - Date.parse(starts.at(-1)!.at)) / 1000)) : null,
+          restarts: starts.length ? starts.length - 1 : null },
+        cycle_latency_ms: latencySummary(durations),
+        agent_latency: [],
+        cache: { recon_hit_pct: null, response_hit_pct: null, dedup_count: null },
+        journal: { readable: true, events_last_minute: journal.filter(e => {
+          const at = Date.parse(e.at);
+          return at >= now - 60_000 && at <= now;
+        }).length },
+        capabilities: [
+          { method: "GET", path: "/api/v1/health", available: true, reason: null },
+          { method: "GET", path: "/api/v1/status", available: true, reason: null },
+          { method: "GET", path: "/api/v1/system/health", available: true, reason: null },
+        ],
+      };
     },
     async status() {
       const journal = await events();
-      const worker = journal.findLast(e => e.stage === "worker_lifecycle");
-      const cycle = journal.findLast(e => e.stage === "worker_cycle");
+      const { lifecycle, cycle, state } = workerState(journal);
       const marker = journal.findLast(e => e.stage === "control" && e.status === "ok" &&
         ["pause", "resume"].includes(commandSchema.parse(e.detail).action.type));
       const mode = executionMode(journal);
@@ -73,14 +127,32 @@ export function createControl(options: { auditPath: string; riskPath: string; in
         commandSchema.parse(e.detail).action.type === "live-execution");
       const liveAction = liveCommand ? commandSchema.parse(liveCommand.detail).action : undefined;
       const equity = publications(journal)[0];
-      const breaker = (worker && cycle && worker.at > cycle.at ? undefined : cycle?.detail) as { breaker_until?: number } | undefined;
-      return { loop_state: worker?.detail ?? "unknown", last_cycle_at: cycle?.at ?? null,
-        breaker_open: (breaker?.breaker_until ?? 0) > Date.now(),
-        breaker_until: breaker?.breaker_until ?? null,
+      const worker = lifecycle.at(-1);
+      const detail = worker && cycle && worker.at > cycle.at ? undefined : cycleData.safeParse(cycle?.detail).data;
+      const positions = openPositions(journal);
+      const day = new Date().toISOString().slice(0, 10);
+      const dailyPnl = projectTradeHistory(journal)
+        .filter(row => new Date(row.exit_at).toISOString().slice(0, 10) === day)
+        .reduce((cents, row) => cents + Math.round(row.pnl_usd * 100), 0);
+      const lastMode = journal.findLast(row => {
+        if (row.stage !== "control" || row.status !== "ok") return false;
+        const action = commandSchema.parse(row.detail).action;
+        return action.type === "phase3" && action.command.type === "mode";
+      });
+      const modeAction = lastMode ? commandSchema.parse(lastMode.detail).action : undefined;
+      const operatingMode = modeAction?.type === "phase3" && modeAction.command.type === "mode"
+        ? modeAction.command.config.mode : modeConfigSchema.parse({mode: process.env.OPERATING_MODE || undefined}).mode;
+      return { loop_state: state, last_cycle_at: cycle?.at ?? null,
+        operating_mode: operatingMode, cycle_duration_ms: detail?.duration_ms ?? null,
+        loop_interval_sec: detail?.loop_interval_sec ?? (options.deployHealth ? options.deployHealth.intervalMs / 1000 : null),
+        exposure_usd: positions.reduce((sum, row) => sum + row.position.cost_cents, 0) / 100,
+        daily_pnl_usd: dailyPnl / 100,
+        breaker_open: (detail?.breaker_until ?? 0) > Date.now(),
+        breaker_until: detail?.breaker_until ?? null,
         entries_paused: !!marker && commandSchema.parse(marker.detail).action.type === "pause",
         execution_mode: mode,
-        live_execution_enabled: mode === "live" && liveAction?.type === "live-execution" && liveAction.enabled,
-        open_positions: openPositions(journal).length, current_equity: equity?.equity_usd ?? null,
+        live_execution_enabled: mode === "live" && (liveAction?.type === "live-execution" && liveAction.enabled === true),
+        open_positions: positions.length, current_equity: equity?.equity_usd ?? null,
         drawdown_pct: equity?.drawdown_pct ?? null };
     },
     async positions() {
