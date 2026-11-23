@@ -167,6 +167,7 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
   const runtime=new ModeRuntime(plane,providerAgent(router,()=>settings,abort.signal),new StrategyEvidence(process.env.STRATEGY_EVIDENCE_PATH || undefined));
   const pipeline = {
     call: runtime.call, mode:runtime, audit, live, deployment,
+    entriesBlocked: () => controls.paused,
     exitMode: env.PAPER_EXIT_MODE,
     equityMaxAgeMs: env.MAX_EQUITY_AGE_SEC * 1000,
     riskConfig: async () => {
