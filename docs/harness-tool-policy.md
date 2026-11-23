@@ -467,4 +467,4 @@ A prompt applies to the exact arguments visible in the approval surface. The ope
 
 ## Review gate
 
-Counts: 327 allow, 48 ask, and 3 deny. These tables require approval before the Hermes configuration, model-facing registry, runnable evaluator or forwarding test is implemented.
+The inventory has 391 REST routes and 13 hard-floor exclusions (four wallet signer files and nine agent prompts), leaving 378 MCP names. The register contains 273 reflection tools and 105 capability tools. ALLOW has 271 reflection reads and 56 capability reads. ASK contains 48 write-capable commands, with zero read-only tools. No write-capable command is ALLOW. DENY contains introspect_exec_signer_ts, introspect_wallet_key_source_ts, and get_wallet_key_source. The model profile filters those names out at registration and dispatch; the operator base inventory still accounts for them. These tables require approval before the Hermes configuration, model-facing registry, runnable evaluator or forwarding test is implemented.
