@@ -101,12 +101,12 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
   for (const event of journal) controls.replay(event);
   const enabled = () => controls.liveExecutionEnabled;
   const deployment = deploymentGate(env.AUDIT_PATH);
-  const signer = wallet && createSigner(wallet.adapter,wallet.config,audit,journal,undefined,enabled);
+  const signer = wallet && createSigner(wallet.adapter,wallet.config,audit,journal,undefined,intent => intent.reduce_only ? controls.liveExitEnabled : enabled(), () => controls.safety.state());
   if (wallet?.native && signer) {
     const native = wallet.native;
     const intent = transactionIntentSchema.parse({run_id:native.run_id,chain:"bitcoin",token_in:native.address,
       token_out:native.recipient,amount_in:native.satoshis,min_amount_out:native.satoshis,
-      size_cents:native.size_cents,deadline_sec:native.deadline_sec,max_fee_native:wallet.config.max_fee_native,route:"native"});
+      size_cents:native.size_cents,deadline_sec:native.deadline_sec,max_fee_native:wallet.config.max_fee_native,route:"native",reduce_only:false});
     await controls.drain(positions);
     const receipt = enabled() && !controls.paused && !deployment.paused() ? await signer.signAndSend(intent, () => !deployment.paused()) : await signer.reconcile(intent);
     log("info","bitcoin.transfer_reconciled",{run_id:intent.run_id,outcome:receipt?.status ?? "not_submitted"});
@@ -141,7 +141,7 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
   }
   await audit({stage:"worker_replay",status:"ok",gaps:[],detail:{position_keys:positions.list().map(tradeKey).sort()}});
   const live = wallet && wallet.stable && signer
-    ? createLiveExecution({...wallet, signer, audit, journal, positions, equity, enabled,entryAllowed: () => !deployment.paused(),onClose:(chain,pnl)=>plane.noteClose(chain,pnl)}) : undefined;
+    ? createLiveExecution({...wallet, signer, audit, journal, positions, equity, enabled,entryAllowed: () => !deployment.paused(),exitAllowed: () => controls.liveExitEnabled,onClose:(chain,pnl)=>plane.noteClose(chain,pnl)}) : undefined;
   const abort = new AbortController();
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, () => { log("info", "worker.shutdown_requested", { reason: signal }); abort.abort(); });
@@ -167,6 +167,7 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
   const runtime=new ModeRuntime(plane,providerAgent(router,()=>settings,abort.signal),new StrategyEvidence(process.env.STRATEGY_EVIDENCE_PATH || undefined));
   const pipeline = {
     call: runtime.call, mode:runtime, audit, live, deployment,
+    entriesBlocked: () => controls.paused,
     exitMode: env.PAPER_EXIT_MODE,
     equityMaxAgeMs: env.MAX_EQUITY_AGE_SEC * 1000,
     riskConfig: async () => {
@@ -176,7 +177,7 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
     },
     equity, positions, maxPositionBps: env.MAX_POSITION_BPS, maxOpenPositions: env.MAX_OPEN_POSITIONS,
   };
-  const watcher = watchPositions(positions, equity, audit, abort.signal, pipeline.call, env.MARK_REFRESH_MS, controls.exits, live, async () => (await pipeline.riskConfig()).max_slippage_bps, runtime).finally(() => abort.abort());
+  const watcher = watchPositions(positions, equity, audit, abort.signal, pipeline.call, env.MARK_REFRESH_MS, controls.exits, live, async () => (await pipeline.riskConfig()).max_slippage_bps, runtime, () => controls.safety.flattenRequested()).finally(() => abort.abort());
   const refresh = refreshRecon(options, pipeline, cache, abort.signal).finally(() => abort.abort());
   const loop = runLoop(options, pipeline, abort.signal, cache, controls).finally(() => abort.abort());
   const results = await Promise.allSettled([loop, refresh, watcher]);

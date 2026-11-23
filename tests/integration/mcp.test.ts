@@ -92,4 +92,8 @@ test("MCP migration mode exposes only read tools", async t => {
   assert.ok(tools.some(tool => tool.name === "get_status"));
   assert.ok(tools.every(tool => tool.annotations?.readOnlyHint === true));
   assert.equal((await client.callTool({ name: "set_live_execution", arguments: { enabled: true } })).isError, true);
+  for (const name of ["queue_controls_emergency_stop", "queue_controls_flatten", "queue_controls_disarm_signer"]) {
+    assert.ok(!tools.some(tool => tool.name === name));
+    assert.equal((await client.callTool({ name })).isError, true);
+  }
 });

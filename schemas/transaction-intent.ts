@@ -16,6 +16,7 @@ export const transactionIntentSchema = z.strictObject({
   deadline_sec: z.number().int().positive(),
   size_cents: z.number().int().positive().safe(),
   route: routeHintSchema,
+  reduce_only: z.boolean(),
 });
 export type TransactionIntent = z.infer<typeof transactionIntentSchema>;
 export type WalletChain = z.infer<typeof walletChainSchema>;
