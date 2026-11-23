@@ -82,6 +82,7 @@ export function createControl(options: { auditPath: string; riskPath: string; in
   }
   return {
     phase3,
+    readEvents: events,
     async health() {
       const journal = await readableJournal();
       return { status: "ok", ok: true, mode: executionMode(journal), journal_readable: true,

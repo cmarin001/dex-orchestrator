@@ -3,6 +3,8 @@ import type { ZodObject } from "zod";
 import { empty, ControlConflict } from "../control/commands.js";
 import { auditQuery, controlInputs, type ControlService } from "../control/service.js";
 import { changes, input, type Change } from "../control/phase3.js";
+import { reflectionCatalog } from "../introspection/catalog.generated.js";
+import { reflect, reflectionInput, reflectionToolName } from "../introspection/reflection.js";
 import { failureKind, log } from "../logging/operational.js";
 
 export function createMcp(control: ControlService, actor: string, readOnly = false) {
@@ -20,6 +22,12 @@ export function createMcp(control: ControlService, actor: string, readOnly = fal
         return {isError:true,content:[{type:"text",text:message}]};
       }
     });
+  }
+  for (const entry of reflectionCatalog) {
+    if (entry.mcp_allowed) {
+      tool(reflectionToolName(entry), "Read-only file metadata and redacted audit tail.", reflectionInput, true,
+        raw => reflect(entry, reflectionInput.parse(raw), control.readEvents));
+    }
   }
   tool("get_status","Read the paper worker, breaker and entry pause state.",empty,true,control.status);
   tool("list_positions","Read open paper positions and their latest recorded marks.",empty,true,control.positions);

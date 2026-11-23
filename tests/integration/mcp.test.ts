@@ -6,6 +6,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpHttp } from "../../src/mcp/http.js";
+import { reflectionCatalog } from "../../src/introspection/catalog.generated.js";
 import { createMcp } from "../../src/mcp/tools.js";
 import { config, controlFixture, identity, target } from "../control-fixture.js";
 
@@ -17,7 +18,7 @@ test("MCP tools and resource use the same reads and command receipts as REST", a
   await server.connect(local);
   await client.connect(remote);
   t.after(() => client.close());
-  assert.equal((await client.listTools()).tools.length,31);
+  assert.equal((await client.listTools()).tools.length,31 + reflectionCatalog.filter(entry => entry.mcp_allowed).length);
   async function call(name:string,args:Record<string,unknown> = {}) {
     const result = await client.callTool({name,arguments:args});
     assert.ok(!result.isError,JSON.stringify(result));

@@ -19,6 +19,8 @@ import { changes, reads, type Change } from "../control/phase3.js";
 import { dashboardAccess, type DashboardAuthEnv } from "./auth.js";
 import { dashboardJwt, sensitiveScope } from "./jwt.js";
 import { walletOverview } from "./wallets.js";
+import { reflectionCatalog } from "../introspection/catalog.generated.js";
+import { reflect, reflectionInput, reflectionPaths } from "../introspection/reflection.js";
 import type { Context } from "hono";
 
 export const dashboardRoutes = new Set(["/health", "/equity", "/journal", "/live-view", "/live-view/stream", "/trades", "/risk-config"]);
@@ -41,7 +43,7 @@ export function createDashboardApi(options: { token?: string; jwt?: ReturnType<t
     if (!options.jwt.recentMfa(identity)) return c.json({ error: "recent_mfa_required" }, 403);
   };
   const control = createControl(options);
-  app.use("*", (c, next) => logHttp(dashboardRoutes.has(c.req.path) || apiPaths.has(c.req.path) ? c.req.path : "unknown", c.req.method,
+  app.use("*", (c, next) => logHttp(dashboardRoutes.has(c.req.path) || apiPaths.has(c.req.path) || reflectionPaths.has(c.req.path) ? c.req.path : "unknown", c.req.method,
     async () => { await next(); return c.res; }));
   if (options.origin) app.use("*", cors({ origin: options.origin, allowHeaders: ["Authorization", "Content-Type"],
     allowMethods: ["GET", "POST", "OPTIONS"] }));
@@ -77,6 +79,16 @@ export function createDashboardApi(options: { token?: string; jwt?: ReturnType<t
   app.use("*", dashboardAccess(options));
   app.use("*", bodyLimit({ maxSize: 16_384, onError: c => c.json({error:"request_too_large"},413) }));
   app.onError((error, c) => { log("error", "dashboard.handler_failed", { failure_kind: failureKind(error) }); return c.json({ error: "dashboard_data_unavailable" }, 503); });
+  for (const entry of reflectionCatalog) {
+    app.get(entry.route, async c => {
+      const queries = c.req.queries();
+      const parsed = reflectionInput.safeParse(c.req.query());
+      if (!parsed.success || Object.values(queries).some(values => values.length !== 1)) {
+        return c.json({ error: "invalid_reflection_query" }, 400);
+      }
+      return c.json(await reflect(entry, parsed.data, events));
+    });
+  }
   app.get("/health", c => c.json({ status: "ok", mode: "paper" }));
   app.get("/journal", async c => {
     const query = querySchema.safeParse(c.req.query());
