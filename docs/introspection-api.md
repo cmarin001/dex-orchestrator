@@ -1,6 +1,6 @@
 # Introspection API inventory
 
-This Phase A inventory is the approval gate. Backend snapshot [28f6166](https://github.com/cmarin001/dex-orchestrator/commit/28f616605da79f02c711ef83cacaff8bc6c84261) includes PR #17 and Phase B batch 1 from PR #18. The [frontend adapter snapshot](https://github.com/cmarin001/dex-orchestrator-app/commit/27a4b942b8c6fdd3247ad2f8b42a5f5226d16c27) informs the reused HTTP contract. This inventory covers every tracked file in the pinned backend tree, including 108 files under `src/`. Files added by this proposal enter the next generated snapshot.
+This Phase A inventory is the approval gate. Backend snapshot [1a457ad](https://github.com/cmarin001/dex-orchestrator/commit/1a457ad029c9eaa57736566863d0962ff12707b4) includes PR #17 and Phase B batch 1 from PR #18. The [frontend adapter snapshot](https://github.com/cmarin001/dex-orchestrator-app/commit/27a4b942b8c6fdd3247ad2f8b42a5f5226d16c27) informs the reused HTTP contract. This inventory covers every tracked file in the pinned backend tree, including 108 files under `src/`. Files added by this proposal enter the next generated snapshot.
 
 The inventory has **286 files, 286 reflection endpoints, 105 capability and compatibility endpoints, and 377 MCP mappings**. These are design counts, including existing HTTP routes. The 14 explicit MCP exceptions are covered by Table 5. No introspection endpoints or MCP changes ship with this inventory.
 
