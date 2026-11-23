@@ -22,6 +22,7 @@ const api = createDashboardApi({
   auditPath: process.env.AUDIT_PATH ?? "data/audit.jsonl",
   riskPath: process.env.RISK_CONFIG_PATH ?? "data/risk-config.jsonl",
   inboxPath: process.env.CONTROL_INBOX_PATH,
+  apiLogPath: process.env.API_LOG_PATH,
   initialCents: Number(process.env.INITIAL_EQUITY_CENTS ?? 100000),
   origin: process.env.DASHBOARD_ORIGIN,
   deployHealth: { version: env.BUILD_VERSION ?? "dev", intervalMs: Number(env.LOOP_INTERVAL_MS ?? 90_000) },
