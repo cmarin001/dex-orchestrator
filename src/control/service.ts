@@ -14,6 +14,7 @@ import type { Position } from "../state/positions.js";
 import { readRisk } from "../state/risk-config.js";
 import { commandSchema, ControlConflict, exitInput, Inbox, rejectInput, riskInput, toggle, liveExecutionInput } from "./commands.js";
 import { createPhase3Api } from "./phase3.js";
+import { HarnessGrants } from "../harness/policy.js";
 import { join, dirname } from "node:path";
 
 export const auditQuery = z.strictObject({
@@ -74,6 +75,7 @@ export function createControl(options: { auditPath: string; riskPath: string; in
   events?: () => Promise<JournalEvent[]>; budgetPath?:string; deployHealth?: { version: string; intervalMs: number } }) {
   const events = options.events ?? (() => readJournal(options.auditPath, true));
   const inbox = new Inbox(options.inboxPath ?? options.auditPath + ".controls");
+  const harnessGrants = new HarnessGrants(join(inbox.path, "harness-grants"));
   const risk = async () => (await readRisk(options.riskPath)) ?? { config: defaultRisk, as_of: null, actor: null };
   const phase3=createPhase3Api(events,inbox,options.budgetPath ?? process.env.BUDGET_PATH ?? join(dirname(options.auditPath),"budget.jsonl"));
   async function readableJournal() {
@@ -82,6 +84,7 @@ export function createControl(options: { auditPath: string; riskPath: string; in
   }
   return {
     phase3,
+    harnessGrants,
     readEvents: events,
     async health() {
       const journal = await readableJournal();

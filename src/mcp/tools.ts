@@ -5,14 +5,23 @@ import { auditQuery, controlInputs, type ControlService } from "../control/servi
 import { changes, input, type Change } from "../control/phase3.js";
 import { reflectionCatalog } from "../introspection/catalog.generated.js";
 import { reflect, reflectionInput, reflectionToolName } from "../introspection/reflection.js";
+import { modelReadAllowed, toolPolicy, type Grants } from "../harness/policy.js";
 import { failureKind, log } from "../logging/operational.js";
 
-export function createMcp(control: ControlService, actor: string, readOnly = false) {
+export function createMcp(control: ControlService, actor: string, readOnly = false, harness?: { grants: Grants }) {
   const server = new McpServer({ name:"dex-orchestrator", version:"1.0.0" });
   function tool(name: string, description: string, inputSchema: ZodObject, readOnlyHint: boolean,
     call: (input: unknown) => Promise<Record<string, unknown>>) {
-    if (readOnly && !readOnlyHint) return;
-    server.registerTool(name, { description, inputSchema, annotations:{readOnlyHint} }, async input => {
+    const modelNames: Record<string, string> = { get_recent_audit: "get_audit", get_candidates: "list_candidates",
+      get_risk: "get_risk_config", get_providers: "list_providers", get_chain_routing: "get_chain" };
+    const exposed = harness ? modelNames[name] ?? name : name;
+    if ((readOnly || harness) && !readOnlyHint) return;
+    if (harness && !modelReadAllowed(exposed, harness.grants)) return;
+    const label = harness ? toolPolicy(exposed)?.description ?? description : description;
+    server.registerTool(exposed, { description: label, inputSchema, annotations:{readOnlyHint} }, async input => {
+      if (harness && !modelReadAllowed(exposed, await control.harnessGrants.read(actor))) {
+        return { isError: true, content: [{ type: "text", text: "Tool unavailable for this profile" }] };
+      }
       try {
         const result = await call(input);
         return { structuredContent:result, content:[{type:"text",text:JSON.stringify(result)}] };
@@ -67,7 +76,7 @@ export function createMcp(control: ControlService, actor: string, readOnly = fal
     tool(name,"Queue "+name.replaceAll("_"," ")+" for the next worker cycle.",changes[name].schema,false,
       raw=>control.phase3.mutate(name,raw,actor));
   }
-  server.registerResource("audit journal", "audit://journal", {mimeType:"application/json",description:"Read-only audit tail."},
+  if (!harness) server.registerResource("audit journal", "audit://journal", {mimeType:"application/json",description:"Read-only audit tail."},
     async uri => ({contents:[{uri:uri.href,mimeType:"application/json",text:JSON.stringify(await control.audit({limit:50}))}]}));
   return server;
 }
