@@ -1,10 +1,10 @@
 # Hermes operator assistant
 
-This is a Phase A design. Hermes reads the worker journal and cites the audit run ID or endpoint behind each answer. The server must exclude mutation tools from its Hermes profile. The worker and signer retain execution authority. A client-side tool filter alone does not enforce read-only access.
+Phase B starts with read-only stdio. Hermes reads the worker journal and cites the audit run ID or endpoint behind each answer. The server must exclude mutation tools from its Hermes profile. The worker and signer retain execution authority. A client-side tool filter alone does not enforce read-only access.
 
 ## Transport and authentication
 
-Hermes supports a URL for Streamable HTTP and a command for stdio under `mcp_servers`. See the [official Hermes MCP guide](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp). The backend's existing MCP process defaults to loopback. Its HTTP transport checks host and bearer headers. In OAuth-only mode the current HTTP handler has no accepted token and rejects requests. A production HTTP connection therefore needs an approved machine authentication path and server-side read-only policy. Do not copy the dashboard credential to Hermes.
+Hermes supports a URL for Streamable HTTP and a command for stdio under `mcp_servers`. See the [official Hermes MCP guide](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp). The backend's existing MCP process defaults to loopback. Its HTTP transport checks host and bearer headers. In OAuth-only mode the current HTTP handler has no accepted token and rejects requests. Remote HTTP follows later with an API-key bearer and a server-side read-only policy, then OAuth when the MCP handler supports it. Do not copy the dashboard credential to Hermes.
 
 Proposed local configuration for the OAuth-only backend profile, after verifying it exposes only read tools. Set the working directory or supply explicit read-only journal paths for the child process.
 

@@ -1,6 +1,6 @@
 # TradeKeel frontend–backend contract
 
-**Phase A review.** The traceability matrix requires approval before endpoint or adapter implementation.
+**Phase B approved.** Validate against frontend main at `84ccb725c56ad62ad9ef2a05966ca98e8e40a64c` and the adapter branch at `27a4b942b8c6fdd3247ad2f8b42a5f5226d16c27`. Re-run the orphan check whenever the adapter head moves. The adapter-only data-source toggle and two palette commands are client-only (browser preference); its three chart bindings and quote preview reuse existing matrix entries.
 
 Frontend baseline [main at 84ccb72](https://github.com/cmarin001/dex-orchestrator-app/commit/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c). Prior inventory and wire shapes from [backend PR #17 at 624e3de](https://github.com/cmarin001/dex-orchestrator/blob/624e3de793c5c2abcf34d18e1ae3afeeedd4b559/docs/frontend-api-contract.md). The current frontend main branch is a local paper desk. The [adapter draft](https://github.com/cmarin001/dex-orchestrator-app/pull/1) is a separate, unmerged delta. It makes the Overview equity chart and Performance equity/drawdown charts read `GET /api/v1/equity` in Backend mode and sends quote previews to `POST /api/v1/quote`. It has no manual-submit or other command integration.
 
@@ -315,7 +315,7 @@ Frontend baseline [main at 84ccb72](https://github.com/cmarin001/dex-orchestrato
 | READ-033 | /performance | [pages/analysis.tsx:46](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/analysis.tsx#L46) | Equity chart and tooltip | fixture equitySeries | GET /api/v1/performance | on demand | legacy-only |
 | READ-034 | /performance | [pages/analysis.tsx:58](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/analysis.tsx#L58) | Drawdown chart and tooltip | fixture equitySeries | GET /api/v1/performance | on demand | legacy-only |
 | READ-035 | /performance | [pages/analysis.tsx:68](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/analysis.tsx#L68) | Chain PnL bars and tooltip | grouped store.trades | GET /api/v1/performance | on demand | legacy-only |
-| READ-036 | /performance | [pages/analysis.tsx:14](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/analysis.tsx#L14) | Selected date range | store.range | none | local | client-only — preference or derived draft |
+| READ-036 | /performance | [pages/analysis.tsx:14](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/analysis.tsx#L14) | Selected date range | store.range | none | local | client-only — range selection is stored in the browser; the selected range separately drives the performance read |
 | READ-037 | /trades | [pages/analysis.tsx:101](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/analysis.tsx#L101) | Trade count | store.trades.length | GET /api/v1/trades | on demand | legacy-only |
 | READ-038 | /trades | [pages/analysis.tsx:102](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/analysis.tsx#L102) | Win streak | derived from store.trades | GET /api/v1/trades | on demand | legacy-only |
 | READ-039 | /trades | [pages/analysis.tsx:103](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/analysis.tsx#L103) | Fees KPI | hard-coded 4.82 | GET /api/v1/performance | on demand | legacy-only |
@@ -377,10 +377,10 @@ Frontend baseline [main at 84ccb72](https://github.com/cmarin001/dex-orchestrato
 | READ-095 | /audit | [pages/system.tsx:48](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/system.tsx#L48) | Expanded event JSON | selected loaded event | GET /api/v1/audit | on demand | legacy-only |
 | READ-096 | /system | [pages/system.tsx:58](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/system.tsx#L58) | Diagnostic snapshot | local bundle from store.events and hard-coded status | GET /api/v1/system/diagnostics | on demand | legacy-only |
 | READ-097 | /system | [pages/system.tsx:74](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/system.tsx#L74) | Endpoint coverage and availability | fixture COVERAGE | GET /api/v1/system/health | on demand | legacy-only |
-| READ-098 | /settings | [pages/system.tsx:103](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/system.tsx#L103) | Theme | store.theme | none | local | client-only — preference or derived draft |
-| READ-099 | /settings | [pages/system.tsx:104](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/system.tsx#L104) | Display mode | store.viewMode | none | local | client-only — preference or derived draft |
-| READ-100 | /settings | [pages/system.tsx:105](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/system.tsx#L105) | Density | store.density | none | local | client-only — preference or derived draft |
-| READ-101 | /settings | [pages/system.tsx:102](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/system.tsx#L102) | Language | store.locale | none | local | client-only — preference or derived draft |
+| READ-098 | /settings | [pages/system.tsx:103](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/system.tsx#L103) | Theme | store.theme | none | local | client-only — theme is a browser preference |
+| READ-099 | /settings | [pages/system.tsx:104](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/system.tsx#L104) | Display mode | store.viewMode | none | local | client-only — display mode is a browser preference |
+| READ-100 | /settings | [pages/system.tsx:105](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/system.tsx#L105) | Density | store.density | none | local | client-only — density is a browser preference |
+| READ-101 | /settings | [pages/system.tsx:102](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/system.tsx#L102) | Language | store.locale | none | local | client-only — language is a browser preference |
 | READ-102 | / | [pages/overview.tsx:40](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/overview.tsx#L40) | Simple drawdown | fixture 1.2% | GET /api/v1/status | on demand | legacy-only |
 | READ-103 | / | [pages/overview.tsx:40](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/overview.tsx#L40) | Simple unrealized PnL | sum of position mark PnL | GET /api/v1/positions | on demand | legacy-only |
 | READ-104 | / | [pages/overview.tsx:40](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/overview.tsx#L40) | Simple exposure | sum of position sizes | GET /api/v1/positions | on demand | legacy-only |
@@ -393,7 +393,7 @@ Frontend baseline [main at 84ccb72](https://github.com/cmarin001/dex-orchestrato
 | READ-111 | /chains | [pages/control.tsx:171](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/control.tsx#L171) | Exposure, daily PnL and win rate | store.chains | GET /api/v1/chains | on demand | legacy-only |
 | READ-112 | /chains | [pages/control.tsx:172](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/control.tsx#L172) | Memecoin filter description | store.chains | GET /api/v1/chains | on demand | legacy-only |
 | READ-113 | /chains | [pages/control.tsx:173](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/control.tsx#L173) | Open position count | store.chains | GET /api/v1/chains | on demand | legacy-only |
-| READ-114 | /chains | [pages/control.tsx:185](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/control.tsx#L185) | Allocation total and dry powder | derived from allocation draft | none | local | client-only — preference or derived draft |
+| READ-114 | /chains | [pages/control.tsx:185](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/control.tsx#L185) | Allocation total and dry powder | derived from allocation draft | none | local | client-only — allocation totals are calculated from the unsaved browser draft |
 | READ-115 | /providers | [pages/control.tsx:215](https://github.com/cmarin001/dex-orchestrator-app/blob/84ccb725c56ad62ad9ef2a05966ca98e8e40a64c/src/desk/pages/control.tsx#L215) | Provider enabled state | store.providers | GET /api/v1/providers | on demand | legacy-only |
 
 ## Table 3 — Traceability
@@ -787,7 +787,7 @@ The same element ID appears exactly once in this table. A toggle with two action
 
 | Endpoint ID | Method and path | Availability | Request | Response |
 | --- | --- | --- | --- | --- |
-| EP-001 | POST /api/v1/controls/kill-switch | Proposed | { flatten: boolean, request_id? } | Receipt |
+| EP-001 | POST /api/v1/controls/kill-switch | Proposed | { flatten: boolean, request_id? } | Receipt with action `emergency_stop` and details for both `entries_paused` and `live_execution_disarmed` |
 | EP-002 | POST /api/v1/controls/pause | Existing | Optional request_id | Receipt |
 | EP-003 | POST /api/v1/controls/resume | Existing | Optional request_id | Receipt |
 | EP-004 | POST /api/v1/controls/live-execution | Existing | enabled boolean and optional request_id | Receipt |
@@ -828,3 +828,7 @@ The same element ID appears exactly once in this table. A toggle with two action
 | EP-039 | GET /api/v1/receipts/:request_id | Proposed | Request ID in path | 200 Receipt |
 | EP-040 | GET /api/v1/providers | Existing, partial | None | items from provider configuration and usage projection |
 | EP-041 | GET /api/v1/system/health | Proposed | None | 200 SystemRead |
+
+## Receipt guarantees
+
+Newly queued commands return HTTP 202. Receipt lookup, idempotent replay and quote preview return HTTP 200. A replay always returns the original `request_id`, including while the command is queued. Conflicting reuse returns HTTP 409.
