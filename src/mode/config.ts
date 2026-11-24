@@ -30,6 +30,7 @@ export function applySetting(state:Settings, action:Phase3Command) {
     case "mode": state.mode=action.config; break;
     case "chain": state.chain=action.config; break;
     case "budget": state.budget=action.config; break;
+    case "provider_order": state.policy = { ...state.policy, order: action.provider_ids }; break;
     case "provider": state.providers[action.id]=action.enabled; break;
     case "strategy": state.strategies[action.id]={
       ...{enabled:builtins.find(s=>s.id===action.id)?.kind==="signal",params:{}},

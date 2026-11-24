@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { signalRecord } from "../../schemas/control-plane.js";
 import type { Phase3Command, SignalRecord } from "../../schemas/control-plane.js";
 import type { Signal } from "../../schemas/signal.js";
@@ -16,6 +16,8 @@ type Tracked = SignalRecord & {state:Status};
 export class ControlPlane {
   private readonly signals=new Map<string,Tracked>();
   private readonly byKey=new Map<string,string>();
+  private orderRevision: string;
+  get providerOrderRevision() { return this.orderRevision; }
   private readonly closed=new Map<string,number[]>();
   noteClose(chain:string,pnl:number) {
     const rows=this.closed.get(chain) ?? [];
@@ -28,12 +30,14 @@ export class ControlPlane {
       payoff:gain.length && losses.length ? (gain.reduce((a,b)=>a+b,0)/gain.length)/(Math.abs(losses.reduce((a,b)=>a+b,0))/losses.length) : 0};
   }
   constructor(readonly settings:Settings,readonly registry:Registry,readonly budget:Budget,
-    private audit:Audit,private clock=Date.now,private liveChain?:string) {}
+    private audit:Audit,private clock=Date.now,private liveChain?:string) {
+    this.orderRevision = createHash("sha256").update(JSON.stringify(settings.policy.order)).digest("hex");
+  }
   replay(event:JournalEvent) {
     if (event.close && event.position) this.noteClose(event.position.chain,event.close.proceeds_cents-event.position.cost_cents);
     if (event.stage==="control" && event.status==="ok") {
-      const {action}=commandSchema.parse(event.detail);
-      if (action.type==="phase3") this.apply(action.command);
+      const { action, id } = commandSchema.parse(event.detail);
+      if (action.type === "phase3") this.apply(action.command, id);
     }
     if (event.stage==="strategy_signal") {
       const row=signalRecord.parse(event.detail);
@@ -49,6 +53,11 @@ export class ControlPlane {
     if (action.type==="chain" && this.liveChain && action.config.enabledChains.some(chain=>chain!==this.liveChain)) {
       return "chain_not_configured_in_wallet";
     }
+    if (action.type === "provider_order") {
+      if (action.expected_revision !== this.orderRevision) return "stale_provider_order";
+      if (action.provider_ids.length !== Object.keys(this.settings.definitions).length ||
+          action.provider_ids.some(id => !Object.hasOwn(this.settings.definitions, id))) return "invalid_provider_order";
+    }
     if (action.type==="provider" && !Object.hasOwn(this.settings.definitions,action.id)) return "provider_unknown";
     if (action.type==="strategy") {
       const item=this.registry.get(action.id);
@@ -62,8 +71,9 @@ export class ControlPlane {
     }
     return null;
   }
-  apply(action:Phase3Command) {
-    applySetting(this.settings,action);
+  apply(action: Phase3Command, requestId?: string) {
+    applySetting(this.settings, action);
+    if (action.type === "provider_order" && requestId) this.orderRevision = requestId;
     if (action.type==="signal") {
       const signal=this.signals.get(action.id);
       if (signal) signal.state=action.approve?"approved":"rejected";

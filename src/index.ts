@@ -177,7 +177,7 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
     },
     equity, positions, maxPositionBps: env.MAX_POSITION_BPS, maxOpenPositions: env.MAX_OPEN_POSITIONS,
   };
-  const watcher = watchPositions(positions, equity, audit, abort.signal, pipeline.call, env.MARK_REFRESH_MS, controls.exits, live, async () => (await pipeline.riskConfig()).max_slippage_bps, runtime, () => controls.safety.flattenRequested()).finally(() => abort.abort());
+  const watcher = watchPositions(positions, equity, audit, abort.signal, pipeline.call, env.MARK_REFRESH_MS, controls.exits, live, async () => (await pipeline.riskConfig()).max_slippage_bps, runtime, () => controls.safety.flattenRequested(), () => controls.exitsPaused).finally(() => abort.abort());
   const refresh = refreshRecon(options, pipeline, cache, abort.signal).finally(() => abort.abort());
   const loop = runLoop(options, pipeline, abort.signal, cache, controls).finally(() => abort.abort());
   const results = await Promise.allSettled([loop, refresh, watcher]);

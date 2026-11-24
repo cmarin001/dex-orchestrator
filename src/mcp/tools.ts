@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ZodObject } from "zod";
-import { empty, ControlConflict } from "../control/commands.js";
+import { empty, ControlConflict, receiptInput } from "../control/commands.js";
 import { auditQuery, controlInputs, type ControlService } from "../control/service.js";
 import { entityRoutes } from "../control/entity-reads.js";
 import { changes, input, type Change } from "../control/phase3.js";
@@ -46,6 +46,12 @@ export function createMcp(control: ControlService, actor: string, readOnly = fal
       return result;
     });
   }
+  tool("get_receipts_request_id", "Read your queued, applied or rejected worker command by its original request ID.", receiptInput, true,
+    async raw => {
+      const result = await control.receipt(raw, actor);
+      if (!result) throw new ControlConflict("Receipt not found");
+      return result;
+    });
   tool("get_status","Read the paper worker, breaker and entry pause state.",empty,true,control.status);
   tool("list_positions","Read open paper positions and their latest recorded marks.",empty,true,control.positions);
   tool("get_equity","Read published paper equity, drawdown and recent history.",empty,true,control.equity);
@@ -56,6 +62,8 @@ export function createMcp(control: ControlService, actor: string, readOnly = fal
     ["set_live_execution","live-execution","Queue a switch for new live entries on a configured live worker. Protective exits and reconciliation remain eligible."],
     ["pause_entries","pause","Queue a pause of new paper entries. Exits continue."],
     ["resume_entries","resume","Queue resumed paper entries subject to the usual risk and rug checks."],
+    ["queue_controls_exits_pause", "exits/pause", "Pause discretionary strategy exits. Policy-driven and manual exits remain eligible."],
+    ["queue_controls_exits_resume", "exits/resume", "Resume discretionary strategy exits under the existing policy."],
     ["update_risk","risk","Queue a validated, attributed revision that affects future paper entries."],
     ["request_exit","exit","Prioritize a paper position for exit evaluation under its existing policy."],
     ["reject_token","reject","Queue a permanent block on new paper entries for a token and chain."],

@@ -39,13 +39,34 @@ test("authenticated dashboard HTTP reads and commands share the worker journal",
     assert.equal(response.status,202);
     assert.equal((await response.json()).actor,"desk");
   }
+  const firstReplay = await send("/controls/pause", { request_id: "pause" });
+  assert.equal(firstReplay.status, 200);
+  const pending = await firstReplay.json();
+  assert.deepEqual(pending, { request_id: "pause", actor: "desk", action: { type: "pause" }, state: "queued", gaps: [] });
+  assert.deepEqual(await (await send("/receipts/pause")).json(), pending);
+  assert.equal((await send("/receipts/not-found")).status, 404);
+  assert.equal((await send("/receipts/invalid.id")).status, 400);
+  const otherActor = createDashboardApi({ ...f.paths, token: "test", initialCents: 100000, actor: "other" });
+  assert.equal((await otherActor.request("/api/v1/receipts/pause", { headers: { Authorization: "Bearer test" } })).status, 404);
   await f.drain();
+  assert.equal((await (await send("/receipts/pause")).json()).state, "applied");
   assert.equal((await (await send("/status")).json()).entries_paused,true);
   assert.deepEqual((await (await send("/risk")).json()).config,config);
   assert.equal((await send("/controls/resume",{request_id:"pause"})).status,409);
   assert.equal((await send("/controls/resume",{})).status,202);
   await f.drain();
   assert.equal((await (await send("/status")).json()).entries_paused,false);
+  assert.equal((await send("/controls/exits/pause", { request_id: "exit-pause" })).status, 202);
+  assert.equal(f.worker.exitsPaused, false);
+  await f.drain();
+  assert.equal((await (await send("/status")).json()).exits_paused, true);
+  assert.equal((await (await send("/receipts/exit-pause")).json()).state, "applied");
+  const restarted = f.makeWorker();
+  for (const event of await readJournal(f.paths.auditPath)) restarted.replay(event);
+  assert.equal(restarted.exitsPaused, true);
+  assert.equal((await send("/controls/exits/resume", { request_id: "exit-resume" })).status, 202);
+  await f.drain();
+  assert.equal((await (await send("/status")).json()).exits_paused, false);
 });
 
 test("live switch is authenticated, off by default and durable after worker application", async t => {
@@ -84,4 +105,38 @@ test("paper worker rejects attempts to enable live execution", async t => {
   assert.equal(receipt.state,"rejected");
   assert.deepEqual(receipt.gaps,["live_execution_not_configured"]);
   assert.equal(f.worker.liveExecutionEnabled,false);
+});
+
+test("paused discretionary exits preserve stop-loss and manual execution in the watcher", async t => {
+  const { watchPositions } = await import("../../src/exits/watcher.js");
+  const { localAgent } = await import("../../src/mode/local-agent.js");
+  const { fixture } = await import("../phase3-fixture.js");
+  const { tradeKey } = await import("../../schemas/common.js");
+
+  for (const { label, price, manual, expected } of [
+    { label: "discretionary", price: 2, manual: false, expected: null },
+    { label: "stop loss", price: 1.9, manual: false, expected: "stop" },
+    { label: "manual", price: 2, manual: true, expected: "manual" },
+  ] as const) await t.test(label, async scope => {
+    const f = await fixture(scope);
+    const controller = new AbortController();
+    const position = { ...identity, cost_cents: 1000, entry_price_usd: 2,
+      exit_policy: { mode: "stop_loss" as const, stop_loss_bps: 100, entry_at: Date.now() - 1000,
+        entry_price: 2, min_profit_bps_for_exit: 25, max_hold_sec: 3600, timeout_ladder: config.timeout_ladder } };
+    f.pipeline.positions.record(position);
+    scope.mock.method(globalThis, "fetch", async () => Response.json({ pairs: [{
+      chainId: position.chain, pairAddress: position.pair, baseToken: { address: position.token },
+      priceUsd: String(price), liquidity: { usd: 100_000 },
+    }] }));
+    const proposal = scope.mock.method(f.runtime, "exitSignal", async (_identity: typeof identity, allowed: boolean) => ({ allowed: true, exit: allowed }));
+    let marks = 0;
+    await watchPositions(f.pipeline.positions, f.pipeline.equity, async event => {
+      await f.audit(event);
+      if (event.status === "paper_close" || (event.stage === "position_mark" && ++marks > 1)) controller.abort();
+    }, controller.signal, localAgent, 1, new Set(manual ? [tradeKey(position)] : []),
+    undefined, undefined, f.runtime, () => false, () => true);
+    assert.equal(f.events.find(event => event.status === "paper_close")?.close?.exit_reason ?? null, expected);
+    assert.equal(f.pipeline.positions.count, expected === null ? 1 : 0);
+    if (!manual) assert.equal(proposal.mock.calls[0]?.arguments[1], false);
+  });
 });

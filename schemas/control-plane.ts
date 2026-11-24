@@ -6,10 +6,15 @@ import { strategySetting } from "./strategy.js";
 import { signalSchema } from "./signal.js";
 
 const subject=z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
+export const providerOrderFields = {
+  provider_ids: z.array(subject).min(1).max(100).refine(ids => new Set(ids).size === ids.length),
+  expected_revision: z.string().min(1).max(100),
+};
 export const phase3Command=z.discriminatedUnion("type",[
   z.strictObject({type:z.literal("mode"),config:modeConfigSchema,reason:z.string().min(1).max(200)}),
   z.strictObject({type:z.literal("chain"),config:chainRoutingSchema}),
   z.strictObject({type:z.literal("budget"),config:budgetSchema}),
+  z.strictObject({ type: z.literal("provider_order"), ...providerOrderFields }),
   z.strictObject({type:z.literal("provider"),id:subject,enabled:z.boolean()}),
   z.strictObject({type:z.literal("strategy"),id:subject,settings:strategySetting.partial().refine(v=>Object.keys(v).length>0)}),
   z.strictObject({type:z.literal("reload")}),

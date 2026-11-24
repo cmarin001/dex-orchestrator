@@ -12,7 +12,7 @@ import { readJournal } from "../logging/logger.js";
 import type { JournalEvent } from "../logging/types.js";
 import type { Position } from "../state/positions.js";
 import { readRisk } from "../state/risk-config.js";
-import { commandSchema, ControlConflict, exitInput, Inbox, rejectInput, riskInput, toggle, liveExecutionInput } from "./commands.js";
+import { commandReceipt, commandSchema, ControlConflict, exitInput, Inbox, receiptInput, rejectInput, riskInput, toggle, liveExecutionInput } from "./commands.js";
 import { createPhase3Api } from "./phase3.js";
 import { HarnessGrants } from "../harness/policy.js";
 import { SafetyGate } from "./safety.js";
@@ -24,7 +24,7 @@ export const auditQuery = z.strictObject({
   since: z.iso.datetime({ offset: true }).optional(),
   cursor: z.coerce.number().int().nonnegative().optional(),
 });
-export const controlInputs = { "live-execution": liveExecutionInput, pause: toggle, resume: toggle, risk: riskInput, exit: exitInput, reject: rejectInput };
+export const controlInputs = { "live-execution": liveExecutionInput, pause: toggle, resume: toggle, "exits/pause": toggle, "exits/resume": toggle, risk: riskInput, exit: exitInput, reject: rejectInput };
 type Control = keyof typeof controlInputs;
 
 function openPositions(events: JournalEvent[]) {
@@ -94,6 +94,35 @@ export function createControl(options: { auditPath: string; riskPath: string; in
     if (!options.events) await access(options.auditPath);
     return events();
   }
+  async function submit(type: Control, raw: unknown, actor: string) {
+    const { request_id = randomUUID(), ...body } = controlInputs[type].parse(raw);
+    const { command, created } = await inbox.submit(request_id, actor, JSON.stringify({type, body}), async () => {
+      switch (type) {
+        case "live-execution": return {type, enabled:liveExecutionInput.parse(raw).enabled};
+        case "pause": return {type};
+        case "resume":
+        case "exits/pause":
+        case "exits/resume": return {type};
+        case "risk": return {type, config:riskInput.parse(raw).config};
+        case "reject": {
+          const {chain,token} = rejectInput.parse(raw);
+          return {type, target:{chain,token}};
+        }
+        case "exit": {
+          const id = exitInput.parse(raw);
+          const matches = openPositions(await events()).filter(({position: p}) => id.run_id
+            ? p.run_id === id.run_id
+            : p.chain === id.chain && normalizeAddress(p.chain,p.token) === normalizeAddress(p.chain,id.token!));
+          if (matches.length !== 1) throw new ControlConflict("Expected exactly one open position");
+          const p = matches[0]!.position;
+          if (!p.exit_policy) throw new ControlConflict("Position has no exit policy");
+          const {run_id,chain,token,pair} = p;
+          return {type, position:{run_id,chain,token,pair}};
+        }
+      }
+    });
+    return { receipt: await commandReceipt(command, events, created), created };
+  }
   return {
     phase3,
     harnessGrants,
@@ -139,6 +168,11 @@ export function createControl(options: { auditPath: string; riskPath: string; in
       const { lifecycle, cycle, state } = workerState(journal);
       const marker = journal.findLast(e => e.stage === "control" && e.status === "ok" &&
         ["pause", "resume"].includes(commandSchema.parse(e.detail).action.type));
+      const exitMarker = journal.findLast(event => {
+        if (event.stage !== "control" || event.status !== "ok") return false;
+        const { action } = commandSchema.parse(event.detail);
+        return action.type === "exits/pause" || action.type === "exits/resume";
+      });
       const mode = executionMode(journal);
       const liveCommand = journal.findLast(e => e.stage === "control" && e.status === "ok" &&
         commandSchema.parse(e.detail).action.type === "live-execution");
@@ -161,6 +195,7 @@ export function createControl(options: { auditPath: string; riskPath: string; in
         ? modeAction.command.config.mode : modeConfigSchema.parse({mode: process.env.OPERATING_MODE || undefined}).mode;
       const signer_state = safety.state();
       return { signer_state, loop_state: state, last_cycle_at: cycle?.at ?? null,
+        exits_paused: !!exitMarker && commandSchema.parse(exitMarker.detail).action.type === "exits/pause",
         operating_mode: operatingMode, cycle_duration_ms: detail?.duration_ms ?? null,
         loop_interval_sec: detail?.loop_interval_sec ?? (options.deployHealth ? options.deployHealth.intervalMs / 1000 : null),
         exposure_usd: positions.reduce((sum, row) => sum + row.position.cost_cents, 0) / 100,
@@ -239,35 +274,14 @@ export function createControl(options: { auditPath: string; riskPath: string; in
       return { scanner: scan?.detail ?? null, watched: (cycle?.detail as { watched?: unknown })?.watched ?? [] };
     },
     risk,
+    submitCommand: submit,
     async submit(type: Control, raw: unknown, actor: string) {
-      const { request_id = randomUUID(), ...body } = controlInputs[type].parse(raw);
-      const command = await inbox.submit(request_id, actor, JSON.stringify({type, body}), async () => {
-        switch (type) {
-          case "live-execution": return {type, enabled:liveExecutionInput.parse(raw).enabled};
-          case "pause": return {type};
-          case "resume": return {type};
-          case "risk": return {type, config:riskInput.parse(raw).config};
-          case "reject": {
-            const {chain,token} = rejectInput.parse(raw);
-            return {type, target:{chain,token}};
-          }
-          case "exit": {
-            const id = exitInput.parse(raw);
-            const matches = openPositions(await events()).filter(({position: p}) => id.run_id
-              ? p.run_id === id.run_id
-              : p.chain === id.chain && normalizeAddress(p.chain,p.token) === normalizeAddress(p.chain,id.token!));
-            if (matches.length !== 1) throw new ControlConflict("Expected exactly one open position");
-            const p = matches[0]!.position;
-            if (!p.exit_policy) throw new ControlConflict("Position has no exit policy");
-            const {run_id,chain,token,pair} = p;
-            return {type, position:{run_id,chain,token,pair}};
-          }
-        }
-      });
-      const journal = await events();
-      const result = journal.findLast(e => e.stage === "control" && commandSchema.parse(e.detail).id === command.id);
-      return { request_id: command.id, actor: command.actor, action:command.action,
-        state: result ? result.status === "ok" ? "applied" : "rejected" : "queued", gaps:result?.gaps ?? [] };
+      return (await submit(type, raw, actor)).receipt;
+    },
+    async receipt(raw: unknown, actor: string) {
+      const { request_id } = receiptInput.parse(raw);
+      const command = await inbox.find(request_id);
+      return command?.actor === actor ? commandReceipt(command, events) : null;
     },
   };
 }
