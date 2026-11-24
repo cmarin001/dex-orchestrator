@@ -123,8 +123,8 @@ function funnelStage(event: JournalEvent) {
 
 export function funnel(events: JournalEvent[], query: z.infer<typeof rangeQuery>) {
   const { since, until, includes } = entityWindow(query);
-  const counts = { scanned: 0, rug_pass: 0, sized: 0, filled: 0 };
-  const reasons = new Map<string, number>();
+  const counts = { discovered: 0, rug_pass: 0, sized: 0, filled: 0 };
+  const reasons = new Map<string, { stage: string; reason: string; count: number }>();
   const bins = new Map<string, typeof counts>();
   const seen = new Set<string>();
   for (const event of events) {
@@ -134,24 +134,28 @@ export function funnel(events: JournalEvent[], query: z.infer<typeof rangeQuery>
       const key = stage + ":" + tradeKey(identity);
       if (seen.has(key)) return;
       seen.add(key);
-      const bin = bins.get(day) ?? { scanned: 0, rug_pass: 0, sized: 0, filled: 0 };
+      const bin = bins.get(day) ?? { discovered: 0, rug_pass: 0, sized: 0, filled: 0 };
       counts[stage]++;
       bin[stage]++;
       bins.set(day, bin);
     };
     if (event.stage === "scanner_batch" || event.stage === "scanner") {
       for (const row of scannerSchema.safeParse(event.detail).data ?? []) {
-        if (row.token && row.pair) record("scanned", row);
+        if (row.token && row.pair) record("discovered", row);
       }
     }
     const identity = event.identity ?? event.position;
     const stage = funnelStage(event);
     if (identity && stage) record(stage, identity);
     if (event.stage === "pipeline" && (event.status === "skipped" || event.status === "failed")) {
-      for (const reason of new Set(event.gaps)) reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
+      for (const reason of new Set(event.gaps)) {
+        const key = JSON.stringify([event.stage, reason]);
+        const previous = reasons.get(key);
+        reasons.set(key, { stage: event.stage, reason, count: (previous?.count ?? 0) + 1 });
+      }
     }
   }
-  return { since, until, counts, reasons: Object.fromEntries(reasons),
+  return { since, until, counts, reasons: [...reasons.values()],
     bins: [...bins].sort(([a], [b]) => a.localeCompare(b)).map(([at, values]) => ({ at, ...values })) };
 }
 

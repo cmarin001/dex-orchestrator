@@ -25,6 +25,7 @@ test("entity routes authenticate and match the read-only MCP tools on journal ev
       close: { exit_at: time + 120_000, exit_price: 3, exit_reason: "target", proceeds_cents: 1500 } },
     { at, identity: other, stage: "executor", status: "paper_fill", gaps: [],
       position: { ...other, cost_cents: 600, entry_price_usd: 2 } },
+    { at, identity: other, stage: "pipeline", status: "skipped", gaps: ["fixture_reason", "fixture_reason"] },
     { at, stage: "equity-curve", status: "ok", gaps: [], detail: { as_of: time / 1000,
       equity_usd: 1005, drawdown_pct: 1, win_rate: 1, expectancy_usd: 5, trades_closed: 1 } },
   ];
@@ -56,7 +57,7 @@ test("entity routes authenticate and match the read-only MCP tools on journal ev
   const position = await compare("/api/v1/positions/still-open", "get_position", { id: "still-open" });
   assert.equal(position.exit_policy, null);
   assert.equal(position.unrealized_pnl_usd, null);
-  assert.equal(position.events.length, 1);
+  assert.equal(position.events.length, 2);
   const trades = await compare("/api/v1/trades?strategy_id=momentum", "list_trades", { strategy_id: "momentum" });
   assert.equal(trades.items[0].trigger, "new_pair");
   assert.equal(trades.items[0].pnl_usd, 5);
@@ -71,7 +72,8 @@ test("entity routes authenticate and match the read-only MCP tools on journal ev
   assert.equal(performance.average_hold_sec, 120);
   assert.equal(performance.fees_usd, null);
   const funnel = await compare("/api/v1/funnel" + suffix, "get_funnel", { until });
-  assert.deepEqual(funnel.counts, { scanned: 1, rug_pass: 1, sized: 1, filled: 2 });
+  assert.deepEqual(funnel.counts, { discovered: 1, rug_pass: 1, sized: 1, filled: 2 });
+  assert.deepEqual(funnel.reasons, [{ stage: "pipeline", reason: "fixture_reason", count: 1 }]);
   const chains = await compare("/api/v1/chains", "list_chains");
   assert.equal(chains.items.find((chain: { chain: string }) => chain.chain === "base").exposure_usd, 6);
   assert.equal((await api.request("/api/v1/trades/unknown", { headers })).status, 404);
