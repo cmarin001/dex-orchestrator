@@ -3,6 +3,8 @@ import type { ZodObject } from "zod";
 import { empty, ControlConflict } from "../control/commands.js";
 import { auditQuery, controlInputs, type ControlService } from "../control/service.js";
 import { changes, input, type Change } from "../control/phase3.js";
+import { reflectionCatalog } from "../introspection/catalog.generated.js";
+import { reflect, reflectionInput, reflectionToolName } from "../introspection/reflection.js";
 import { failureKind, log } from "../logging/operational.js";
 
 export function createMcp(control: ControlService, actor: string, readOnly = false) {
@@ -21,6 +23,12 @@ export function createMcp(control: ControlService, actor: string, readOnly = fal
       }
     });
   }
+  for (const entry of reflectionCatalog) {
+    if (entry.mcp_allowed) {
+      tool(reflectionToolName(entry), "Read-only file metadata and redacted audit tail.", reflectionInput, true,
+        raw => reflect(entry, reflectionInput.parse(raw), control.readEvents));
+    }
+  }
   tool("get_status","Read the paper worker, breaker and entry pause state.",empty,true,control.status);
   tool("list_positions","Read open paper positions and their latest recorded marks.",empty,true,control.positions);
   tool("get_equity","Read published paper equity, drawdown and recent history.",empty,true,control.equity);
@@ -28,7 +36,7 @@ export function createMcp(control: ControlService, actor: string, readOnly = fal
   tool("get_candidates","Read the last scan and watched targets.",empty,true,control.candidates);
   tool("get_risk","Read the current risk configuration.",empty,true,control.risk);
   const controls = [
-    ["set_live_execution","live-execution","Queue a switch for new live orders on a configured live worker. Disabling also blocks exits. Submitted orders continue reconciliation."],
+    ["set_live_execution","live-execution","Queue a switch for new live entries on a configured live worker. Protective exits and reconciliation remain eligible."],
     ["pause_entries","pause","Queue a pause of new paper entries. Exits continue."],
     ["resume_entries","resume","Queue resumed paper entries subject to the usual risk and rug checks."],
     ["update_risk","risk","Queue a validated, attributed revision that affects future paper entries."],

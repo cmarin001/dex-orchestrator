@@ -40,6 +40,7 @@ export interface Pipeline {
   live?: LiveExecution;
   mode?: ModeRuntime;
   deployment?: ReturnType<typeof deploymentGate>;
+  entriesBlocked?: () => boolean;
 }
 
 export async function runCandidate(input: Merged, dependencies: Pipeline, ranked?: ScannerRow): Promise<"paper_fill" | "live_fill" | "skipped"> {
@@ -163,6 +164,7 @@ export async function runCandidate(input: Merged, dependencies: Pipeline, ranked
   if (!fresh() || signal?.aborted) return skip("expired_before_fill");
 
   if (dependencies.deployment?.paused()) return skip("deployment_paused");
+  if (dependencies.entriesBlocked?.()) return skip("entries_paused");
 
   const position = { ...identity, cost_cents: costCents, entry_price_usd: quote.value,
     ...(strategy?.signal ? { strategy_id:strategy.signal.strategyId } : {}),
