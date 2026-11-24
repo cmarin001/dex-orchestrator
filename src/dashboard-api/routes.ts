@@ -22,7 +22,7 @@ import { walletOverview } from "./wallets.js";
 import type { Context } from "hono";
 
 export const dashboardRoutes = new Set(["/health", "/equity", "/journal", "/live-view", "/live-view/stream", "/trades", "/risk-config"]);
-const apiPaths = new Set([...["health","status","positions","equity","audit","candidates","risk","wallets"],
+const apiPaths = new Set([...["health","status","positions","equity","audit","candidates","risk","wallets","system/health"],
   ...Object.keys(controlInputs).map(name => "controls/" + name)].map(name => "/api/v1/" + name));
 
 const querySchema = z.object({
@@ -59,9 +59,7 @@ export function createDashboardApi(options: { token?: string; jwt?: ReturnType<t
     const loop_interval_sec = options.deployHealth.intervalMs / 1000;
     let journal_readable = false;
     try {
-      await control.health();
-      const cycle = (await events()).findLast(event => event.stage === "worker_cycle");
-      last_cycle_at = cycle?.at ?? null;
+      last_cycle_at = (await control.health()).last_cycle_at;
       journal_readable = true;
     } catch (error) {
       log("warn", "dashboard.deploy_probe_failed", {failure_kind:failureKind(error)});
@@ -153,6 +151,7 @@ export function createDashboardApi(options: { token?: string; jwt?: ReturnType<t
   for (const name of ["health","status","positions","equity","candidates","risk"] as const) {
     app.get("/api/v1/" + name, async c => c.json(await control[name]()));
   }
+  app.get("/api/v1/system/health", async c => c.json(await control.systemHealth()));
   const wallets = walletOverview(options.auditPath);
   app.get("/api/v1/wallets", async c => c.json(await wallets()));
   app.get("/api/v1/audit", async c => {

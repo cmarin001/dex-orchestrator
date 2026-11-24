@@ -153,7 +153,7 @@ export async function runLoop(
       }
     }
     if (controls) await pipeline.audit({stage:"worker_cycle",status:"ok",gaps:[],
-      detail:{watched:targets,breaker_until:breakerUntil,loop_interval_sec:options.intervalMs / 1000}});
+      detail:{watched:targets,breaker_until:breakerUntil,loop_interval_sec:options.intervalMs / 1000,duration_ms:elapsed(cycleStarted)}});
     log("debug", "loop.cycle", { count: targets.length, duration_ms: elapsed(cycleStarted) });
     await sleep(Math.max(0, delay - (Date.now() - started)), undefined, { signal }).catch((error: unknown) => {
       if (!signal.aborted) throw error;
