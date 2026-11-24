@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ZodObject } from "zod";
 import { empty, ControlConflict } from "../control/commands.js";
 import { auditQuery, controlInputs, type ControlService } from "../control/service.js";
+import { entityRoutes } from "../control/entity-reads.js";
 import { changes, input, type Change } from "../control/phase3.js";
 import { reflectionCatalog } from "../introspection/catalog.generated.js";
 import { reflect, reflectionInput, reflectionToolName } from "../introspection/reflection.js";
@@ -37,6 +38,13 @@ export function createMcp(control: ControlService, actor: string, readOnly = fal
       tool(reflectionToolName(entry), "Read-only file metadata and redacted audit tail.", reflectionInput, true,
         raw => reflect(entry, reflectionInput.parse(raw), control.readEvents));
     }
+  }
+  for (const { tool: name, method, schema, description } of entityRoutes) {
+    tool(name, description, schema, true, async raw => {
+      const result = await control[method](raw);
+      if (result === null) throw new ControlConflict("Unknown or ambiguous run ID");
+      return result;
+    });
   }
   tool("get_status","Read the paper worker, breaker and entry pause state.",empty,true,control.status);
   tool("list_positions","Read open paper positions and their latest recorded marks.",empty,true,control.positions);
