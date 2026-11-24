@@ -21,12 +21,13 @@ import { dashboardJwt, sensitiveScope } from "./jwt.js";
 import { walletOverview } from "./wallets.js";
 import { reflectionCatalog } from "../introspection/catalog.generated.js";
 import { reflect, reflectionInput, reflectionPaths } from "../introspection/reflection.js";
+import { checkGrants, discoverCapabilities, grantInput } from "../harness/policy.js";
 import { disarmInput, safetyActions, safetyInput } from "../control/safety.js";
 import { appendApiLog } from "../logging/api-log.js";
 import { dirname, join } from "node:path";
 import type { Context } from "hono";
 
-export const dashboardRoutes = new Set(["/health", "/equity", "/journal", "/live-view", "/live-view/stream", "/trades", "/risk-config"]);
+export const dashboardRoutes = new Set(["/permissions", "/harness/capabilities", "/health", "/equity", "/journal", "/live-view", "/live-view/stream", "/trades", "/risk-config"]);
 const apiPaths = new Set([...["health","status","positions","equity","audit","candidates","risk","wallets","system/health"],
   ...safetyActions.map(name => "controls/" + name),
   ...Object.keys(controlInputs).map(name => "controls/" + name)].map(name => "/api/v1/" + name));
@@ -49,6 +50,8 @@ export function createDashboardApi(options: { token?: string; jwt?: ReturnType<t
   const control = createControl(options);
   app.use("*", (c, next) => logHttp(dashboardRoutes.has(c.req.path) || apiPaths.has(c.req.path) || reflectionPaths.has(c.req.path) ? c.req.path : "unknown", c.req.method,
     async () => { await next(); return c.res; }));
+  if (options.origin) app.use("*", cors({ origin: options.origin, allowHeaders: ["Authorization", "Content-Type"],
+    allowMethods: ["GET", "POST", "PUT", "OPTIONS"] }));
   if (options.origin) app.use("*", cors({ origin: options.origin, allowHeaders: ["Authorization", "Content-Type", "Idempotency-Key"],
     allowMethods: ["GET", "POST", "OPTIONS"] }));
   app.use("*", async (c, next) => { c.header("Cache-Control", "no-store"); await next(); });
@@ -93,6 +96,20 @@ export function createDashboardApi(options: { token?: string; jwt?: ReturnType<t
       return c.json(await reflect(entry, parsed.data, events));
     });
   }
+  app.get("/harness/capabilities", async c => {
+    const grants = await control.harnessGrants.read(c.get("dashboardActor"));
+    return c.json({ tools: discoverCapabilities(grants) });
+  });
+  app.put("/permissions", async c => {
+    const input = grantInput.safeParse(await c.req.json().catch(() => null));
+    if (!input.success) return c.json({ error: "INVALID_PERMISSIONS" }, 400);
+    const error = checkGrants(input.data.grants);
+    if (error) return c.json({ error }, error === "UNKNOWN_TOOL" ? 400 : 403);
+    const denied = requireElevated(c);
+    if (denied) return denied;
+    await control.harnessGrants.replace(c.get("dashboardActor"), input.data.grants);
+    return c.json(input.data);
+  });
   app.get("/health", c => c.json({ status: "ok", mode: "paper" }));
   app.get("/journal", async c => {
     const query = querySchema.safeParse(c.req.query());
