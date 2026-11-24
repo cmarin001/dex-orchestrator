@@ -10,6 +10,7 @@ import { z } from "zod";
 import { riskConfigSchema } from "../../schemas/risk-config.js";
 import { elapsed, failureKind, log, logHttp, startTimer } from "../logging/operational.js";
 import { liveViews } from "../live/publisher.js";
+import { AmbiguousRun, entityRoutes, tradeQuery } from "../control/entity-reads.js";
 import { projectTradeHistory } from "../logging/projections/trade-history.js";
 import { readJournal } from "../logging/logger.js";
 import type { JournalEvent } from "../logging/types.js";
@@ -32,11 +33,6 @@ const apiPaths = new Set([...["health","status","positions","equity","audit","ca
   ...safetyActions.map(name => "controls/" + name),
   ...Object.keys(controlInputs).map(name => "controls/" + name)].map(name => "/api/v1/" + name));
 
-const querySchema = z.object({
-  from: z.iso.date().optional(), to: z.iso.date().optional(), run_id: z.string().optional(),
-  token: z.string().optional(), cursor: z.string().max(400).optional(),
-  limit: z.coerce.number().int().min(1).max(200).default(50),
-});
 
 export function createDashboardApi(options: { token?: string; jwt?: ReturnType<typeof dashboardJwt>; auditPath: string; riskPath: string;
   initialCents: number; deployHealth?: { version: string; intervalMs: number }; actor?: string; origin?: string; events?: () => Promise<JournalEvent[]>; inboxPath?: string; apiLogPath?: string }) {
@@ -48,7 +44,9 @@ export function createDashboardApi(options: { token?: string; jwt?: ReturnType<t
     if (!options.jwt.recentMfa(identity)) return c.json({ error: "recent_mfa_required" }, 403);
   };
   const control = createControl(options);
-  app.use("*", (c, next) => logHttp(dashboardRoutes.has(c.req.path) || apiPaths.has(c.req.path) || reflectionPaths.has(c.req.path) ? c.req.path : "unknown", c.req.method,
+  app.use("*", (c, next) => logHttp(dashboardRoutes.has(c.req.path) || apiPaths.has(c.req.path) || reflectionPaths.has(c.req.path) ? c.req.path :
+    entityRoutes.find(({ path }) => path === c.req.path ||
+      (path.endsWith("/:id") && c.req.path.replace(/\/[^/]+$/, "/:id") === path))?.path ?? "unknown", c.req.method,
     async () => { await next(); return c.res; }));
   if (options.origin) app.use("*", cors({ origin: options.origin, allowHeaders: ["Authorization", "Content-Type"],
     allowMethods: ["GET", "POST", "PUT", "OPTIONS"] }));
@@ -112,7 +110,7 @@ export function createDashboardApi(options: { token?: string; jwt?: ReturnType<t
   });
   app.get("/health", c => c.json({ status: "ok", mode: "paper" }));
   app.get("/journal", async c => {
-    const query = querySchema.safeParse(c.req.query());
+    const query = tradeQuery.safeParse(c.req.query());
     if (!query.success) return c.json({ error: "invalid_filters" }, 400);
     const { run_id, from, to, limit } = query.data;
     const items = (await events()).filter(e => (!run_id || e.identity?.run_id === run_id) &&
@@ -158,19 +156,14 @@ export function createDashboardApi(options: { token?: string; jwt?: ReturnType<t
       realized_cents: realized, open_positions: open.size, committed_cents: [...open.values()].reduce((a, b) => a + b, 0) });
   });
   app.get("/trades", async c => {
-    const query = querySchema.safeParse(c.req.query());
+    const query = tradeQuery.safeParse(c.req.query());
     if (!query.success) return c.json({ error: "invalid_filters" }, 400);
-    const { from, to, token, limit, cursor } = query.data;
-    const all = projectTradeHistory(await events()).filter(row => {
-      const day = new Date(row.exit_at).toISOString().slice(0, 10);
-      return (!from || day >= from) && (!to || day <= to) && (!token || row.token === token);
-    });
-    const key = ({ exit_at, run_id }: typeof all[number]) => exit_at + ":" + run_id;
-    const found = cursor ? all.findIndex(row => key(row) === cursor) : -1;
-    if (cursor && found < 0) return c.json({ error: "invalid_cursor" }, 400);
-    const items = all.slice(found + 1, found + 1 + limit);
-    const last = items.at(-1);
-    return c.json({ items, next_cursor: last && found + 1 + limit < all.length ? key(last) : null });
+    try {
+      return c.json(await control.legacyTrades(query.data));
+    } catch (error) {
+      if (error instanceof ControlConflict) return c.json({ error: "invalid_cursor" }, 400);
+      throw error;
+    }
   });
   app.get("/risk-config", async c => c.json({ ...await control.risk(), editable: true }));
   app.post("/risk-config", async c => {
@@ -183,6 +176,24 @@ export function createDashboardApi(options: { token?: string; jwt?: ReturnType<t
   });
   for (const name of ["health","status","positions","equity","candidates","risk"] as const) {
     app.get("/api/v1/" + name, async c => c.json(await control[name]()));
+  }
+  for (const { path, method, schema } of entityRoutes) {
+    app.get(path, async c => {
+      const id = c.req.param("id");
+      const query = c.req.query();
+      const parsed = schema.safeParse(id === undefined ? query : { ...query, id });
+      if (!parsed.success || Object.values(c.req.queries()).some(values => values.length !== 1)) {
+        return c.json({ error: "invalid_filters" }, 400);
+      }
+      try {
+        const result = await control[method](parsed.data);
+        return result === null ? c.json({ error: "not_found" }, 404) : c.json(result);
+      } catch (error) {
+        if (error instanceof AmbiguousRun) return c.json({ error: "ambiguous_run_id" }, 409);
+        if (error instanceof ControlConflict) return c.json({ error: "invalid_cursor" }, 400);
+        throw error;
+      }
+    });
   }
   app.get("/api/v1/system/health", async c => c.json(await control.systemHealth()));
   const wallets = walletOverview(options.auditPath);

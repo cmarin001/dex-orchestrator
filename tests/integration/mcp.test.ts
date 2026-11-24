@@ -18,7 +18,7 @@ test("MCP tools and resource use the same reads and command receipts as REST", a
   await server.connect(local);
   await client.connect(remote);
   t.after(() => client.close());
-  assert.equal((await client.listTools()).tools.length,31 + reflectionCatalog.filter(entry => entry.mcp_allowed).length);
+  assert.equal((await client.listTools()).tools.length,37 + reflectionCatalog.filter(entry => entry.mcp_allowed).length);
   async function call(name:string,args:Record<string,unknown> = {}) {
     const result = await client.callTool({name,arguments:args});
     assert.ok(!result.isError,JSON.stringify(result));

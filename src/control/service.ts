@@ -16,6 +16,7 @@ import { commandSchema, ControlConflict, exitInput, Inbox, rejectInput, riskInpu
 import { createPhase3Api } from "./phase3.js";
 import { HarnessGrants } from "../harness/policy.js";
 import { SafetyGate } from "./safety.js";
+import { AmbiguousRun, chainQuery, chains, deskTradeQuery, deskTrades, entityEvents, entityId, funnel, performance, rangeQuery, tradePage, tradeQuery } from "./entity-reads.js";
 import { join, dirname } from "node:path";
 
 export const auditQuery = z.strictObject({
@@ -39,6 +40,15 @@ function openPositions(events: JournalEvent[]) {
     }
   }
   return [...positions.values()];
+}
+
+function positionItems(journal: JournalEvent[], now = Date.now()) {
+  return openPositions(journal).map(({ position, opened, mark }) => ({
+    ...position, size_usd: position.cost_cents / 100,
+    size_tokens: position.cost_cents / 100 / position.entry_price_usd,
+    age_sec: Math.max(0, Math.floor((now - (position.exit_policy?.entry_at ?? opened)) / 1000)),
+    mark, unrealized_pnl_usd: mark ? (position.cost_cents / 100) * (mark.price / position.entry_price_usd - 1) : null,
+  }));
 }
 
 function publications(events: JournalEvent[]) {
@@ -164,11 +174,48 @@ export function createControl(options: { auditPath: string; riskPath: string; in
         drawdown_pct: equity?.drawdown_pct ?? null };
     },
     async positions() {
-      return { items: openPositions(await events()).map(({position, opened, mark}) => ({
-        ...position, size_usd: position.cost_cents / 100, size_tokens: position.cost_cents / 100 / position.entry_price_usd,
-        age_sec: Math.max(0, Math.floor((Date.now() - (position.exit_policy?.entry_at ?? opened)) / 1000)),
-        mark, unrealized_pnl_usd: mark ? (position.cost_cents / 100) * (mark.price / position.entry_price_usd - 1) : null,
-      })) };
+      return { items: positionItems(await events()) };
+    },
+    async position(raw: unknown) {
+      const { id } = entityId.parse(raw);
+      const journal = await events();
+      const matches = positionItems(journal).filter(row => row.run_id === id);
+      if (matches.length > 1) throw new AmbiguousRun("Run ID matches multiple entities");
+      if (matches.length === 0) return null;
+      const position = matches[0]!;
+      return { ...position, exit_policy: position.exit_policy ?? null, events: entityEvents(journal, position) };
+    },
+    async legacyTrades(raw: unknown) {
+      return tradePage(projectTradeHistory(await events()), tradeQuery.parse(raw));
+    },
+    async trades(raw: unknown) {
+      const query = deskTradeQuery.parse(raw);
+      const rows = deskTrades(await events()).filter(row =>
+        (!query.run_id || row.run_id === query.run_id) && (!query.strategy_id || row.strategy_id === query.strategy_id));
+      return tradePage(rows, query, row => Buffer.from(JSON.stringify([row.exit_at, tradeKey(row)])).toString("base64url"));
+    },
+    async trade(raw: unknown) {
+      const { id } = entityId.parse(raw);
+      const journal = await events();
+      const matches = deskTrades(journal).filter(row => row.run_id === id);
+      if (matches.length > 1) throw new AmbiguousRun("Run ID matches multiple entities");
+      if (matches.length === 0) return null;
+      const trade = matches[0]!;
+      return { ...trade, events: entityEvents(journal, trade) };
+    },
+    async performance(raw: unknown) {
+      const query = rangeQuery.parse(raw);
+      const journal = await events();
+      return performance(journal, positionItems(journal), query);
+    },
+    async funnel(raw: unknown) {
+      const query = rangeQuery.parse(raw);
+      return funnel(await events(), query);
+    },
+    async chains(raw: unknown) {
+      const query = chainQuery.parse(raw);
+      const journal = await events();
+      return chains(journal, positionItems(journal), await phase3.chainConfig(journal), query);
     },
     async equity() {
       const history = publications(await events());

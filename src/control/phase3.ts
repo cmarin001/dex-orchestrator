@@ -43,14 +43,21 @@ export type Change=keyof typeof changes;
 
 export function createPhase3Api(events:()=>Promise<JournalEvent[]>,inbox:Inbox,budgetPath:string) {
   const budget=new Budget(budgetPath);
+  async function state(journal: JournalEvent[]) {
+    const settings=await initialSettings(process.env);
+    const registry=new Registry();
+    await registry.reload();
+    const plane=new ControlPlane(settings,registry,budget,async()=>{throw new Error("Read-only projection");});
+    for (const row of journal) plane.replay(row);
+    return { settings, registry, plane };
+  }
   return {
+    async chainConfig(journal: JournalEvent[]) {
+      return (await state(journal)).settings.chain;
+    },
     async read(resource:Resource,item?:string) {
       const journal=await events();
-      const settings=await initialSettings(process.env);
-      const registry=new Registry();
-      await registry.reload();
-      const plane=new ControlPlane(settings,registry,budget,async()=>{throw new Error("Read-only projection");});
-      for (const row of journal) plane.replay(row);
+      const { settings, registry, plane } = await state(journal);
       if (resource==="mode") return settings.mode;
       if (resource==="chain") return settings.chain;
       if (resource==="budget") return {config:settings.budget,...await budget.status(settings.budget)};
