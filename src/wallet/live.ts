@@ -1,6 +1,7 @@
 import { randomUUID, createHash } from "node:crypto";
 import { z } from "zod";
 import { handoff } from "../../schemas/common.js";
+import { exitReasonSchema } from "../../schemas/trade-history.js";
 import { transactionIntentSchema } from "../../schemas/transaction-intent.js";
 import type { WalletConfig } from "../../schemas/wallet-config.js";
 import type { Audit } from "../logging/logger.js";
@@ -14,22 +15,24 @@ import type { Signer } from "./signer.js";
 
 const orderSchema = z.strictObject({
   intent:transactionIntentSchema,identity:z.strictObject(handoff),position:positionSchema,
-  source_run_id:z.string(),action:z.enum(["entry","exit"]), reason:z.enum(["target","stop","timeout"]).optional(),
-});
+  source_run_id:z.string(),action:z.enum(["entry","exit"]), reason:exitReasonSchema.optional(),
+}).refine(order => order.intent.reduce_only === (order.action === "exit"), "Intent direction mismatch");
 type Order = z.infer<typeof orderSchema>;
 const walletNotSent = new Set(["INTENT_EXPIRED","PER_TRADE_LIMIT_EXCEEDED","DAILY_LIMIT_EXCEEDED",
   "SIMULATION_FAILED","FEE_LIMIT_EXCEEDED","QUOTE_UNAVAILABLE","QUOTE_MISMATCH","ROUTE_MISMATCH",
-  "UNRECONCILED_TRANSACTION","LIVE_EXECUTION_DISABLED","DEPLOYMENT_PAUSED","UNAPPROVED_PROGRAM","SIMULATION_TOKEN_MISMATCH","RPC_CHAIN_MISMATCH"]);
+  "UNRECONCILED_TRANSACTION","LIVE_EXECUTION_DISABLED","DEPLOYMENT_PAUSED","UNAPPROVED_PROGRAM","SIMULATION_TOKEN_MISMATCH","RPC_CHAIN_MISMATCH","SIGNER_DISARMED","REDUCE_ONLY_VIOLATION"]);
 
 type Settings = {stable:string; stableDecimals:number; usdPerUnit:number; decimals:Map<string,number>};
-type Shared = {entryAllowed?: () => boolean; onClose?: (chain:string,pnl:number)=>void; enabled: () => boolean; config:WalletConfig; signer:Signer; audit:Audit; journal:JournalEvent[]; positions:Positions; equity:Equity} & Settings;
+type Shared = {exitAllowed?: () => boolean; entryAllowed?: () => boolean; onClose?: (chain:string,pnl:number)=>void; enabled: () => boolean; config:WalletConfig; signer:Signer; audit:Audit; journal:JournalEvent[]; positions:Positions; equity:Equity} & Settings;
 
 export function createLiveExecution(settings: Shared) {
   const {config,signer,audit,positions,equity,stable,stableDecimals,usdPerUnit,decimals} = settings;
   const pending = new Map<string,Order>();
   for (const row of settings.journal) {
     if (row.stage === "live_intent") {
-      const order = orderSchema.parse(row.detail);
+      const previous = z.object({action:z.enum(["entry","exit"]),intent:z.record(z.string(),z.unknown())}).parse(row.detail);
+      const order = orderSchema.parse({...row.detail as object,
+        intent:{reduce_only:previous.action === "exit",...previous.intent}});
       if (order.intent.chain !== config.chain) throw new SystemError("LIVE_JOURNAL_CHAIN_MISMATCH");
       pending.set(order.intent.run_id,order);
     }
@@ -86,7 +89,9 @@ export function createLiveExecution(settings: Shared) {
     return true;
   }
   async function submit(order: Order) {
-    if (!settings.enabled() || pending.size || (order.action === "entry" && settings.entryAllowed?.() === false)) return false;
+    const enabled = order.action === "exit" ? settings.exitAllowed?.() ?? settings.enabled() :
+      settings.enabled() && settings.entryAllowed?.() !== false;
+    if (!enabled || pending.size) return false;
     const validated = orderSchema.parse(order);
     await audit({identity:order.identity,stage:"live_intent",status:"ok",detail:validated,gaps:[]});
     pending.set(order.intent.run_id,validated);
@@ -104,10 +109,10 @@ export function createLiveExecution(settings: Shared) {
     return BigInt(round(scaled)).toString();
   }
   function intent(identity:Handoff, size_cents:number, token_in:string, token_out:string,
-    amount_in:string, min_amount_out:string) {
+    amount_in:string, min_amount_out:string, reduce_only:boolean) {
     return transactionIntentSchema.parse({run_id:identity.run_id,chain:identity.chain,token_in,token_out,amount_in,
       min_amount_out,max_fee_native:config.max_fee_native,deadline_sec:Math.floor(Date.now()/1000)+60,
-      size_cents,route:config.chain === "solana" ? "jupiter" : "0x"});
+      size_cents,reduce_only,route:config.chain === "solana" ? "jupiter" : "0x"});
   }
   return {
     chain:config.chain,
@@ -124,18 +129,20 @@ export function createLiveExecution(settings: Shared) {
         const minimum = units((actualSettlementUnits/price)*(1-slippageBps/10_000),tokenDecimals(identity.token),Math.ceil);
         const hash = createHash("sha256").update(JSON.stringify([identity.run_id,identity.chain,identity.token,identity.pair])).digest("hex");
         const walletRun = { ...identity, run_id: hash.slice(0,8)+"-"+hash.slice(8,12)+"-4"+hash.slice(13,16)+"-8"+hash.slice(17,20)+"-"+hash.slice(20,32) };
-        const tx = { ...intent(walletRun,cost_cents,stable,identity.token,settlement,minimum),
+        const tx = { ...intent(walletRun,cost_cents,stable,identity.token,settlement,minimum,false),
           deadline_sec:Math.min(Math.floor(expiresAt/1000),Math.floor(Date.now()/1000)+60) };
         return submit({identity:walletRun,intent:tx,source_run_id:identity.run_id,action:"entry",position:{...identity,cost_cents:Math.round(actualSettlementUnits*100),entry_price_usd:price,exit_policy,...(strategyId ? {strategy_id:strategyId} : {})}});
       });
     },
-    exit(position:Position, price:number, slippageBps:number, reason:"target"|"stop"|"timeout") {
+    exit(position:Position, price:number, slippageBps:number, reason:z.infer<typeof exitReasonSchema>) {
       return serialize(async()=> {
-        if (!position.live_amount || position.chain !== config.chain || !positions.get(position)) return false;
+        const open = positions.get(position);
+        if (!open?.live_amount || open.run_id !== position.run_id || open.chain !== config.chain) return false;
+        position = open;
         const identity = {chain:position.chain,token:position.token,pair:position.pair,run_id:randomUUID()};
-        const usd = Number(position.live_amount) / 10 ** tokenDecimals(position.token) * price;
+        const usd = Number(open.live_amount) / 10 ** tokenDecimals(position.token) * price;
         const minimum = units(usd*(1-slippageBps/10_000),stableDecimals,Math.ceil);
-        const tx = intent(identity,Math.ceil(usd*100*usdPerUnit),position.token,stable,position.live_amount,minimum);
+        const tx = intent(identity,Math.ceil(usd*100*usdPerUnit),position.token,stable,open.live_amount,minimum,true);
         return submit({identity,intent:tx,source_run_id:position.run_id,action:"exit",position,reason});
       });
     },

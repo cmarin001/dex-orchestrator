@@ -81,3 +81,9 @@ Keep the first test on stdio with an isolated Hermes profile. Forward a stable a
 The [Hermes API server](https://hermes-agent.nousresearch.com/docs/user-guide/features/api-server) advertises a model ID and serves an OpenAI-compatible chat endpoint. Add the opt-in router entry during the provider configuration phase, using the deployed model ID and the existing provider schema. Verify the endpoint, authentication, supported capabilities and budget behavior before enabling it. Keep the default routing order and test that the provider is considered only after explicit enablement and routing changes.
 
 The provider path is advisory. The execution worker and signer remain responsible for order submission.
+
+### Phase E forwarding gate
+
+Use fallback C if the pinned Hermes server fails to forward downstream TradeKeel tools. The upstream model then sees curated Hermes operator tools with backend-controlled authorization. The raw TradeKeel tool catalog requires a direct backend connection.
+
+The Phase E integration test must launch the pinned Hermes server, connect a real upstream MCP client, check discovery of a backend read tool, and invoke it against a fixture worker journal. Verify end-to-end request correlation and that disabled writes are absent. A forwarding failure requires the curated fallback and a passing upstream test of that fallback before Phase E is complete.

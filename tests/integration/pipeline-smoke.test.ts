@@ -207,3 +207,18 @@ test("a tightened portfolio limit while Executor runs prevents the paper fill", 
   assert.deepEqual(events.at(-1)?.gaps, ["entry_limit_changed"]);
   assert.ok(events.every(event => event.status !== "paper_fill"));
 });
+
+test("a stop during candidate evaluation also blocks an in-flight paper fill", async () => {
+  let stopped = false;
+  const events: AuditEvent[] = [];
+  const call: CallAgent = async request => {
+    if (request.prompt === "executor") stopped = true;
+    return fakeAgent(request);
+  };
+  const positions = new Positions();
+  assert.equal(await runCandidate(snapshot(), { call, positions, equity: new Equity(100_000),
+    maxPositionBps: 100, maxOpenPositions: 2, audit: async event => { events.push(event); },
+    entriesBlocked: () => stopped }), "skipped");
+  assert.equal(positions.count, 0);
+  assert.deepEqual(events.at(-1)?.gaps, ["entries_paused"]);
+});

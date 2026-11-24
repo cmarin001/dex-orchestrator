@@ -18,6 +18,7 @@ jobs:
           node-version: 20.19.6
           cache: npm
       - run: npm ci
+      - run: node --import tsx scripts/compare-api-routes.ts
       - run: npm run lint --if-present
       - run: npm run typecheck --if-present
       - run: npm test

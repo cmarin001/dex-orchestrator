@@ -66,6 +66,7 @@ services:
       DASHBOARD_API_TOKEN_FILE: /run/secrets/dashboard_api_token
       DASHBOARD_API_HOST: 127.0.0.1
       DASHBOARD_API_PORT: "8787"
+      API_LOG_PATH: /app/data/controls/api-log.jsonl
       CONTROL_INBOX_PATH: /app/data/controls
     volumes:
       - "${DEX_DATA_DIR:-../../data}:/app/data:ro"

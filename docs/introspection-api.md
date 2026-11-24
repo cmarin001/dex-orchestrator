@@ -1,8 +1,8 @@
 # Introspection API inventory
 
-This Phase A inventory is the approval gate. Backend snapshot [1a457ad](https://github.com/cmarin001/dex-orchestrator/commit/1a457ad029c9eaa57736566863d0962ff12707b4) includes PR #17 and Phase B batch 1 from PR #18. The [frontend adapter snapshot](https://github.com/cmarin001/dex-orchestrator-app/commit/27a4b942b8c6fdd3247ad2f8b42a5f5226d16c27) informs the reused HTTP contract. This inventory covers every tracked file in the pinned backend tree, including 108 files under `src/`. Files added by this proposal enter the next generated snapshot.
+Table 5 was approved for Batch 1. The loopback health MCP mapping below closes the additional gap identified during approval. Backend snapshot [1a457ad](https://github.com/cmarin001/dex-orchestrator/commit/1a457ad029c9eaa57736566863d0962ff12707b4) includes PR #17 and Phase B batch 1 from PR #18. The [frontend adapter snapshot](https://github.com/cmarin001/dex-orchestrator-app/commit/27a4b942b8c6fdd3247ad2f8b42a5f5226d16c27) informs the reused HTTP contract. This inventory covers every tracked file in the pinned backend tree, including 108 files under `src/`. Files added by this proposal enter the next generated snapshot.
 
-The inventory has **286 files, 286 reflection endpoints, 105 capability and compatibility endpoints, and 377 MCP mappings**. These are design counts, including existing HTTP routes. The 14 explicit MCP exceptions are covered by Table 5. No introspection endpoints or MCP changes ship with this inventory.
+The inventory has **286 files, 286 reflection endpoints, 105 capability and compatibility endpoints, and 378 MCP mappings**. These are design counts, including existing HTTP routes. The 13 explicit MCP exceptions are covered by Table 5. No introspection endpoints or MCP changes ship with this inventory.
 
 ## Contract decisions for review
 
@@ -10,13 +10,21 @@ The inventory has **286 files, 286 reflection endpoints, 105 capability and comp
 - The runtime mutation boundary stays with named, schema-validated operations. Source code, prompt files, execution modules, schemas and deployment definitions are immutable through the API. Validation may run against a pinned schema. Schema changes use Git review. Runtime settings changes enter the existing worker queue.
 - Invocation is explicit. Table 3 lists pure computations, pinned schema validation and bounded named market-data reads. Network wrappers use fixed destinations, canonical identifiers, quotas and redacted results. No arbitrary function lookup, callback injection, shell execution, file operations, raw transaction construction, signing or broadcasting. Per-strategy inspection exposes metadata and schema; existing signal and registry controls serve evaluation workflows until a bounded replay contract is reviewed.
 - Write intake uses Idempotency-Key and binds it to the actor, operation and normalized parameters. New acceptance returns 202; identical replay or lookup returns 200 and the original request_id. Conflict returns 409. Dry-run validates and reports intended effects without queueing. Emergency operation may be accepted independently of health polling. The pending batch 2 decision about protective live exits remains open.
-- Each mirrored operation uses the REST validation and application service. Default MCP exposure contains zero mutations. Every command tool remains absent until individually enabled and supplied with authorization equivalent to REST step-up. The four wallet signer files and all agent prompts have REST metadata only. The loopback health probe is infrastructure-only; authenticated MCP health maps to the authenticated versioned route. The live and audit streams map to scoped MCP resource subscriptions. Each subscribe tool returns an authorized resource URI and cursor. Clients subscribe using the negotiated protocol, receive resource update notifications, then read the latest data or events since the cursor.
+- Each mirrored operation uses the REST validation and application service. Default MCP exposure contains zero mutations. Every command tool remains absent until individually enabled and supplied with authorization equivalent to REST step-up. The four wallet signer files and all agent prompts have REST metadata only. The loopback probe stays loopback-only over HTTP. Table 4 maps it to an authenticated MCP health read using the same service and response shape. The live and audit streams map to scoped MCP resource subscriptions. Each subscribe tool returns an authorized resource URI and cursor. Clients subscribe using the negotiated protocol, receive resource update notifications, then read the latest data or events since the cursor.
 - Record one append-only api-log row per REST or MCP request with timestamp, authenticated actor, surface (rest, mcp or hermes), method, route template, allow-listed redacted parameters, status, request ID and duration. Record queued command effects separately in the trading journal. Treat unknown or pre-auth input as untrusted and omit bodies for secret-bearing routes. The read API for that log does not embed its raw output in the request log.
 - GET fields, expand and verbose select public manifest fields only. Limits, cursors, time ranges, exact filters, ordering and output format are available where a documented projection supports them. An unsupported option yields a validation error. Export and detail shapes reuse the approved dashboard contract. Generate the per-endpoint docs and index alongside the runtime manifest after review.
 
 ## Hermes operator layer
 
 The [Hermes plan](./hermes-integration.md#introspection-operator-layer) specifies outbound MCP client, inbound MCP server and opt-in model-provider modes. It flags the inbound bridge as a verification requirement. An inbound connection must preserve actor attribution and the backend's authorization policy. Correlate Hermes and backend activity by a request ID. Keep command receipts and execution in TradeKeel.
+
+### Compatibility and cutover
+
+Compatibility routes are existing legacy URLs and aliases inside the 105 capability rows; the Backend adapter uses the versioned /api/v1 contract.
+
+POST /api/v1/chain and POST /api/v1/controls/chain dispatch the same set_chain_routing action. The unversioned health, equity, journal, live-view, trades and risk-config paths use separate HTTP handlers or projections. They reuse domain services where available. The Batch 4 adapter-cutover PR is the removal point for those parallel dashboard contracts, after it moves their consumers to the versioned surface, including live-view HTTP/SSE and risk reads and writes. GET /internal/health is a deploy probe used by health.ts and remains infrastructure.
+
+Hermes Phase E uses **fallback C** if native forwarding fails. A model can use Hermes' curated operator tools through one connection; that profile does not promise a raw mirror. The forwarding test governs whether a raw single-connection mirror can be advertised.
 
 ## Table 1 — Files by module
 
@@ -673,7 +681,7 @@ Existing parameters come from the approved contract or router. Proposed paramete
 | CTL-062 | GET /trades | from?, to?, token?, cursor?, limit? | 200 legacy trade page | Read-only operator | FILE-131 | Existing compatibility |
 | CTL-063 | GET /risk-config | None | 200 legacy risk config | Read-only operator | FILE-131 | Existing compatibility |
 | CTL-064 | POST /risk-config | RiskConfig | 202 legacy risk receipt | Scope + recent MFA | FILE-131 | Existing compatibility |
-| CTL-065 | GET /internal/health | None | 200 loopback process health | Loopback only; MCP profile excludes | FILE-131 | Existing compatibility endpoint |
+| CTL-065 | GET /internal/health | None | 200 loopback process health | Loopback HTTP; authenticated read-only MCP | FILE-131 | Existing compatibility endpoint |
 | CTL-066 | POST /api/v1/agents/:id/enable | Agent id, expected_revision | 202 Receipt; 200 replay with original request_id | Scope + recent MFA | FILE-108 | Proposed runtime capability |
 | CTL-067 | POST /api/v1/agents/:id/disable | Agent id, expected_revision; core safety agents ineligible | 202 Receipt; 200 replay with original request_id | Scope + recent MFA | FILE-108 | Proposed runtime capability |
 | CTL-068 | PATCH /api/v1/agents/:id/params | Agent id, typed allowed params, expected_revision | 202 Receipt; 200 replay with original request_id | Scope + recent MFA | FILE-108 | Proposed runtime capability |
@@ -1099,6 +1107,8 @@ The rows below describe the proposed complete mapping. Existing deployed MCP nam
 | MCP-376 | CTL-104 | read_tools_honeypot_is | Read-only response; external provider quota | Canonical chain and token/pair where required; rate-limited |
 | MCP-377 | CTL-105 | read_tools_rugcheck_xyz | Read-only response; external provider quota | Canonical chain and token/pair where required; rate-limited |
 
+| MCP-378 | CTL-065 | get_internal_health | Read-only health projection | None |
+
 ## Table 5 — Traceability
 
 | Trace ID | File ID | Endpoint ID | MCP ID or explicit exception |
@@ -1453,7 +1463,7 @@ The rows below describe the proposed complete mapping. Existing deployed MCP nam
 | TRC-348 | FILE-131 | CTL-062 | MCP-335 |
 | TRC-349 | FILE-131 | CTL-063 | MCP-336 |
 | TRC-350 | FILE-131 | CTL-064 | MCP-337 |
-| TRC-351 | FILE-131 | CTL-065 | Exception: loopback-only infrastructure probe |
+| TRC-351 | FILE-131 | CTL-065 | MCP-378 |
 | TRC-352 | FILE-108 | CTL-066 | MCP-338 |
 | TRC-353 | FILE-108 | CTL-067 | MCP-339 |
 | TRC-354 | FILE-108 | CTL-068 | MCP-340 |
@@ -1497,4 +1507,10 @@ The rows below describe the proposed complete mapping. Existing deployed MCP nam
 
 ## Approval
 
-Approve Table 5 and the explicit exceptions before implementing reflection, runtime controls, API logging or MCP publication. The proposed read surface and write capabilities require integration tests against the pinned frontend and backend contracts.
+Batch 1 implements the reflection reads. Later batches implement adapter cutover, controls, logging and MCP registration in order. The proposed read surface and write capabilities require integration tests against the pinned frontend and backend contracts.
+
+### Batch 1 verification
+
+`node --import tsx scripts/compare-api-routes.ts` runs in CI. It prints the 13 approved REST-only paths, the live REST and read-only MCP inventory deltas, and fails on a reflection mismatch or an unapproved exclusion. Compatibility tool names remain visible in the delta until their cutover.
+
+The baked catalog can be reproduced with `node scripts/generate-reflection.mjs` from a checkout containing the pinned revision. It neither reads deployment state nor loads source files at request time. JSON Schema is returned for allow-listed schema exports and built-in strategy inputs where Zod can represent them. Other schema fields are null. Audit tails contain only timestamps and statuses of explicitly source-tagged journal entries; an untagged journal yields an empty tail. The remaining capability, invocation, command, and durable API-log features belong to later batches.

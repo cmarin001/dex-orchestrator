@@ -19,10 +19,16 @@ import { changes, reads, type Change } from "../control/phase3.js";
 import { dashboardAccess, type DashboardAuthEnv } from "./auth.js";
 import { dashboardJwt, sensitiveScope } from "./jwt.js";
 import { walletOverview } from "./wallets.js";
+import { reflectionCatalog } from "../introspection/catalog.generated.js";
+import { reflect, reflectionInput, reflectionPaths } from "../introspection/reflection.js";
+import { disarmInput, safetyActions, safetyInput } from "../control/safety.js";
+import { appendApiLog } from "../logging/api-log.js";
+import { dirname, join } from "node:path";
 import type { Context } from "hono";
 
 export const dashboardRoutes = new Set(["/health", "/equity", "/journal", "/live-view", "/live-view/stream", "/trades", "/risk-config"]);
 const apiPaths = new Set([...["health","status","positions","equity","audit","candidates","risk","wallets","system/health"],
+  ...safetyActions.map(name => "controls/" + name),
   ...Object.keys(controlInputs).map(name => "controls/" + name)].map(name => "/api/v1/" + name));
 
 const querySchema = z.object({
@@ -32,7 +38,7 @@ const querySchema = z.object({
 });
 
 export function createDashboardApi(options: { token?: string; jwt?: ReturnType<typeof dashboardJwt>; auditPath: string; riskPath: string;
-  initialCents: number; deployHealth?: { version: string; intervalMs: number }; actor?: string; origin?: string; events?: () => Promise<JournalEvent[]>; inboxPath?: string }) {
+  initialCents: number; deployHealth?: { version: string; intervalMs: number }; actor?: string; origin?: string; events?: () => Promise<JournalEvent[]>; inboxPath?: string; apiLogPath?: string }) {
   const app = new Hono<DashboardAuthEnv>();
   const requireElevated = (c: Context<DashboardAuthEnv>) => {
     if (!options.jwt) return;
@@ -41,9 +47,9 @@ export function createDashboardApi(options: { token?: string; jwt?: ReturnType<t
     if (!options.jwt.recentMfa(identity)) return c.json({ error: "recent_mfa_required" }, 403);
   };
   const control = createControl(options);
-  app.use("*", (c, next) => logHttp(dashboardRoutes.has(c.req.path) || apiPaths.has(c.req.path) ? c.req.path : "unknown", c.req.method,
+  app.use("*", (c, next) => logHttp(dashboardRoutes.has(c.req.path) || apiPaths.has(c.req.path) || reflectionPaths.has(c.req.path) ? c.req.path : "unknown", c.req.method,
     async () => { await next(); return c.res; }));
-  if (options.origin) app.use("*", cors({ origin: options.origin, allowHeaders: ["Authorization", "Content-Type"],
+  if (options.origin) app.use("*", cors({ origin: options.origin, allowHeaders: ["Authorization", "Content-Type", "Idempotency-Key"],
     allowMethods: ["GET", "POST", "OPTIONS"] }));
   app.use("*", async (c, next) => { c.header("Cache-Control", "no-store"); await next(); });
   const events = options.events ?? (() => readJournal(options.auditPath, true));
@@ -77,6 +83,16 @@ export function createDashboardApi(options: { token?: string; jwt?: ReturnType<t
   app.use("*", dashboardAccess(options));
   app.use("*", bodyLimit({ maxSize: 16_384, onError: c => c.json({error:"request_too_large"},413) }));
   app.onError((error, c) => { log("error", "dashboard.handler_failed", { failure_kind: failureKind(error) }); return c.json({ error: "dashboard_data_unavailable" }, 503); });
+  for (const entry of reflectionCatalog) {
+    app.get(entry.route, async c => {
+      const queries = c.req.queries();
+      const parsed = reflectionInput.safeParse(c.req.query());
+      if (!parsed.success || Object.values(queries).some(values => values.length !== 1)) {
+        return c.json({ error: "invalid_reflection_query" }, 400);
+      }
+      return c.json(await reflect(entry, parsed.data, events));
+    });
+  }
   app.get("/health", c => c.json({ status: "ok", mode: "paper" }));
   app.get("/journal", async c => {
     const query = querySchema.safeParse(c.req.query());
@@ -161,6 +177,35 @@ export function createDashboardApi(options: { token?: string; jwt?: ReturnType<t
     });
     return input ? c.json(input) : c.json({error:"invalid_filters"},400);
   });
+  for (const action of safetyActions) {
+    const path = "/api/v1/controls/" + action;
+    app.post(path, async c => {
+      const started = startTimer();
+      const raw = await c.req.text();
+      let body: unknown;
+      try { body = raw ? JSON.parse(raw) : {}; }
+      catch { return c.json({ error: "invalid_json" }, 400); }
+      const key = c.req.header("Idempotency-Key");
+      if (key && typeof body === "object" && body !== null && !Array.isArray(body)) {
+        const requested = (body as Record<string, unknown>).request_id;
+        if (requested !== undefined && requested !== key) return c.json({ error: "idempotency_key_mismatch" }, 409);
+        body = { ...body, request_id: key };
+      }
+      const input = (action === "disarm-signer" ? disarmInput : safetyInput).safeParse(body);
+      if (!input.success) return c.json({ error: "invalid_safety_control" }, 400);
+      if (action !== "emergency-stop") {
+        const denied = requireElevated(c);
+        if (denied) return denied;
+      }
+      const actor = c.get("dashboardActor");
+      const { activated, ...receipt } = await control.safety.activate(action, actor, input.data.request_id);
+      const status = activated ? 202 : 200;
+      await appendApiLog(options.apiLogPath ?? join(dirname(options.auditPath), "api-log.jsonl"), {
+        surface: "rest", actor, method: "POST", path, status, request_id: receipt.request_id, duration_ms: elapsed(started),
+      });
+      return c.json(receipt, status);
+    });
+  }
   for (const name of Object.keys(controlInputs) as Array<keyof typeof controlInputs>) {
     app.post("/api/v1/controls/" + name, async c => {
       const text = await c.req.text();
