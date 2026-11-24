@@ -10,6 +10,7 @@ Group=dex
 WorkingDirectory=/opt/dex-orchestrator
 EnvironmentFile=/opt/dex-orchestrator/.env
 Environment=CONTROL_INBOX_PATH=/opt/dex-orchestrator/data/controls
+Environment=API_LOG_PATH=/opt/dex-orchestrator/data/controls/api-log.jsonl
 ExecStart=/usr/local/bin/node --import tsx src/dashboard-api/server.ts
 Restart=always
 RestartSec=5
