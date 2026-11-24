@@ -24,7 +24,7 @@ export const auditQuery = z.strictObject({
   since: z.iso.datetime({ offset: true }).optional(),
   cursor: z.coerce.number().int().nonnegative().optional(),
 });
-export const controlInputs = { "live-execution": liveExecutionInput, pause: toggle, resume: toggle, risk: riskInput, exit: exitInput, reject: rejectInput };
+export const controlInputs = { "live-execution": liveExecutionInput, pause: toggle, resume: toggle, "exits/pause": toggle, "exits/resume": toggle, risk: riskInput, exit: exitInput, reject: rejectInput };
 type Control = keyof typeof controlInputs;
 
 function openPositions(events: JournalEvent[]) {
@@ -100,7 +100,9 @@ export function createControl(options: { auditPath: string; riskPath: string; in
       switch (type) {
         case "live-execution": return {type, enabled:liveExecutionInput.parse(raw).enabled};
         case "pause": return {type};
-        case "resume": return {type};
+        case "resume":
+        case "exits/pause":
+        case "exits/resume": return {type};
         case "risk": return {type, config:riskInput.parse(raw).config};
         case "reject": {
           const {chain,token} = rejectInput.parse(raw);
@@ -166,6 +168,11 @@ export function createControl(options: { auditPath: string; riskPath: string; in
       const { lifecycle, cycle, state } = workerState(journal);
       const marker = journal.findLast(e => e.stage === "control" && e.status === "ok" &&
         ["pause", "resume"].includes(commandSchema.parse(e.detail).action.type));
+      const exitMarker = journal.findLast(event => {
+        if (event.stage !== "control" || event.status !== "ok") return false;
+        const { action } = commandSchema.parse(event.detail);
+        return action.type === "exits/pause" || action.type === "exits/resume";
+      });
       const mode = executionMode(journal);
       const liveCommand = journal.findLast(e => e.stage === "control" && e.status === "ok" &&
         commandSchema.parse(e.detail).action.type === "live-execution");
@@ -188,6 +195,7 @@ export function createControl(options: { auditPath: string; riskPath: string; in
         ? modeAction.command.config.mode : modeConfigSchema.parse({mode: process.env.OPERATING_MODE || undefined}).mode;
       const signer_state = safety.state();
       return { signer_state, loop_state: state, last_cycle_at: cycle?.at ?? null,
+        exits_paused: !!exitMarker && commandSchema.parse(exitMarker.detail).action.type === "exits/pause",
         operating_mode: operatingMode, cycle_duration_ms: detail?.duration_ms ?? null,
         loop_interval_sec: detail?.loop_interval_sec ?? (options.deployHealth ? options.deployHealth.intervalMs / 1000 : null),
         exposure_usd: positions.reduce((sum, row) => sum + row.position.cost_cents, 0) / 100,

@@ -62,6 +62,8 @@ export function createMcp(control: ControlService, actor: string, readOnly = fal
     ["set_live_execution","live-execution","Queue a switch for new live entries on a configured live worker. Protective exits and reconciliation remain eligible."],
     ["pause_entries","pause","Queue a pause of new paper entries. Exits continue."],
     ["resume_entries","resume","Queue resumed paper entries subject to the usual risk and rug checks."],
+    ["queue_controls_exits_pause", "exits/pause", "Pause discretionary strategy exits. Policy-driven and manual exits remain eligible."],
+    ["queue_controls_exits_resume", "exits/resume", "Resume discretionary strategy exits under the existing policy."],
     ["update_risk","risk","Queue a validated, attributed revision that affects future paper entries."],
     ["request_exit","exit","Prioritize a paper position for exit evaluation under its existing policy."],
     ["reject_token","reject","Queue a permanent block on new paper entries for a token and chain."],

@@ -15,7 +15,7 @@ import type { ModeRuntime } from "../mode/runtime.js";
 import { dexScreener } from "../tools/dexscreener.js";
 import { activeTarget, canExit } from "./policy.js";
 
-export async function watchPositions(positions: Positions, equity: Equity, audit: Audit, signal: AbortSignal, call: CallAgent, refreshMs = 5000, requestedExits = new Set<string>(), live?: LiveExecution, liveSlippage?: () => Promise<number>, mode?:ModeRuntime, flattenRequested: () => boolean = () => false) {
+export async function watchPositions(positions: Positions, equity: Equity, audit: Audit, signal: AbortSignal, call: CallAgent, refreshMs = 5000, requestedExits = new Set<string>(), live?: LiveExecution, liveSlippage?: () => Promise<number>, mode?:ModeRuntime, flattenRequested: () => boolean = () => false, discretionaryExitsPaused: () => boolean = () => false) {
   log("info", "watcher.started");
   const targets = new Map<string, number>();
   while (!signal.aborted) {
@@ -50,8 +50,8 @@ export async function watchPositions(positions: Positions, equity: Equity, audit
       }
       if (!isFresh(observed, 15_000) || signal.aborted) continue;
       const forced = flattenRequested() || requestedExits.has(tradeKey(identity));
-      const proposed = forced ? undefined : await mode?.exitSignal(identity,policy.mode==="stop_loss");
-      const timedByStrategy = proposed?.exit === true;
+      const proposed = forced ? undefined : await mode?.exitSignal(identity, policy.mode === "stop_loss" && !discretionaryExitsPaused());
+      const timedByStrategy = proposed?.exit === true && !discretionaryExitsPaused();
       if (!forced && (proposed?.allowed === false || (!timedByStrategy && !canExit(policy, { price, at })))) continue;
       const decision = forced ? null : await executor(call, identity, { action:"exit",sizer:{status:"SIZED",size_usd:cost_cents/100,max_slippage_bps:0},
         position:{entry_price:policy.entry_price,opened_at:Math.floor(policy.entry_at/1000),max_hold_sec:timedByStrategy ? 1 : policy.max_hold_sec,

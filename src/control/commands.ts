@@ -25,6 +25,7 @@ const address = z.strictObject(tokenFields).refine(v => addressMatches(v.chain, 
 const action = z.discriminatedUnion("type", [
   z.strictObject({type:z.literal("phase3"),command:phase3Command}),
   z.strictObject({type:z.literal("pause")}), z.strictObject({type:z.literal("resume")}),
+  z.strictObject({ type: z.enum(["exits/pause", "exits/resume"]) }),
   z.strictObject({type:z.literal("live-execution"),enabled:z.boolean()}),
   z.strictObject({type:z.literal("risk"), config:riskConfigSchema}),
   z.strictObject({type:z.literal("reject"), target:address}),

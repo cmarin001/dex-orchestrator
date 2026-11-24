@@ -13,6 +13,8 @@ import type { ConfigJournals } from "./config-journals.js";
 
 export class WorkerControls {
   private entriesPaused = false;
+  private discretionaryExitsPaused = false;
+  get exitsPaused() { return this.discretionaryExitsPaused; }
   readonly safety: SafetyGate;
   get paused() { return this.entriesPaused || this.safety.state() !== "normal"; }
   private liveEnabled = false;
@@ -27,6 +29,7 @@ export class WorkerControls {
     if (action.type === "phase3") this.plane?.apply(action.command, command.id);
     if (action.type === "live-execution") this.liveEnabled = action.enabled;
     if (action.type === "pause" || action.type === "resume") this.entriesPaused = action.type === "pause";
+    if (action.type === "exits/pause" || action.type === "exits/resume") this.discretionaryExitsPaused = action.type === "exits/pause";
     if (action.type === "reject") this.cache.reject(action.target);
     if (action.type === "exit") this.exits.add(tradeKey(action.position));
   }

@@ -62,15 +62,19 @@ test("the executable worker boots and fills with no provider credentials in its 
   const closed=once(worker,"close");
   let stderr="";
   worker.stderr.on("data",chunk=>{stderr+=String(chunk);});
-  t.after(async()=>{ if (worker.exitCode===null) worker.kill(); await closed; });
-  const end=Date.now()+6_000;
-  let filled=false;
-  while (Date.now()<end && worker.exitCode===null) {
-    const journal=await readJournal(auditPath,true);
-    filled=journal.some(row=>row.status==="paper_fill");
-    if (filled) break;
-    await sleep(40);
+  try {
+    const end=Date.now()+6_000;
+    let filled=false;
+    while (Date.now()<end && worker.exitCode===null) {
+      const journal=await readJournal(auditPath,true);
+      filled=journal.some(row=>row.status==="paper_fill");
+      if (filled) break;
+      await sleep(40);
+    }
+    assert.equal(filled,true,stderr);
+    assert.equal(stderr,"");
+  } finally {
+    if (worker.exitCode===null) worker.kill();
+    await closed;
   }
-  assert.equal(filled,true,stderr);
-  assert.equal(stderr,"");
 });

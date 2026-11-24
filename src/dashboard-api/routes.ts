@@ -249,7 +249,7 @@ export function createDashboardApi(options: { token?: string; jwt?: ReturnType<t
       catch { return c.json({error:"invalid_json"},400); }
       const input = controlInputs[name].safeParse(body);
       if (!input.success) return c.json({error:"invalid_control"},400);
-      if (name === "risk" || (name === "live-execution" && "enabled" in input.data && input.data.enabled)) {
+      if (name === "risk" || name === "exits/pause" || name === "exits/resume" || (name === "live-execution" && "enabled" in input.data && input.data.enabled)) {
         const denied = requireElevated(c);
         if (denied) return denied;
       }
