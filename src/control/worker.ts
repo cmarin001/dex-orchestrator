@@ -7,22 +7,26 @@ import type { Positions } from "../state/positions.js";
 import { appendRisk, readRisk } from "../state/risk-config.js";
 import { commandSchema, type Command, Inbox } from "./commands.js";
 import type { ControlPlane } from "./plane.js";
+import { SafetyGate } from "./safety.js";
 import { transition } from "../mode/switch.js";
 import type { ConfigJournals } from "./config-journals.js";
 
 export class WorkerControls {
-  paused = false;
+  private entriesPaused = false;
+  readonly safety: SafetyGate;
+  get paused() { return this.entriesPaused || this.safety.state() !== "normal"; }
   private liveEnabled = false;
-  get liveExecutionEnabled() { return this.liveConfigured && this.liveEnabled; }
+  get liveExecutionEnabled() { return this.liveConfigured && this.liveEnabled && this.safety.state() === "normal"; }
+  get liveExitEnabled() { return this.liveConfigured && this.safety.state() !== "disarmed"; }
   readonly exits = new Set<string>();
   private readonly completed = new Set<string>();
   constructor(private inbox: Inbox, private riskPath: string, private cache: ReconCache, private audit: Audit,
-    private readonly liveConfigured = false, private readonly plane?:ControlPlane, private readonly revisions?:ConfigJournals) {}
+    private readonly liveConfigured = false, private readonly plane?:ControlPlane, private readonly revisions?:ConfigJournals) { this.safety = new SafetyGate(inbox.path); }
   private apply(command: Command) {
     const action = command.action;
     if (action.type === "phase3") this.plane?.apply(action.command);
     if (action.type === "live-execution") this.liveEnabled = action.enabled;
-    if (action.type === "pause" || action.type === "resume") this.paused = action.type === "pause";
+    if (action.type === "pause" || action.type === "resume") this.entriesPaused = action.type === "pause";
     if (action.type === "reject") this.cache.reject(action.target);
     if (action.type === "exit") this.exits.add(tradeKey(action.position));
   }

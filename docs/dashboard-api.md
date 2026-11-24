@@ -85,3 +85,19 @@ Set parameters with `{"params":{"minLiq":60000}}` on
 `/strategies/volume-spike/params`. An approval expires in 120 seconds.
 An approved signal still passes the trading pipeline on reevaluation and is
 consumed at most once. No API can directly call the signer.
+
+### Execution safety controls
+
+All three routes are authorized separately from status. The live signer reads a shared durable marker immediately before signing and again before sending.
+
+| HTTP | Effect |
+| --- | --- |
+| POST /api/v1/controls/emergency-stop | Block entries and keep protective exits eligible. Receipt state is reduce_only when the signer has not been fully disarmed. |
+| POST /api/v1/controls/flatten | Block entries and ask the position watcher to exit every eligible open position. Each exit still requires a fresh quote and normal execution checks. Requires step-up in OAuth mode. |
+| POST /api/v1/controls/disarm-signer | Block signatures and broadcasts for entries and exits. Requires confirmation DISARM in the JSON body and step-up in OAuth mode. |
+
+The worker keeps reconciling already-submitted transactions. A receipt records the effective gate and request ID. Flatten acknowledges the exit request before positions are confirmed closed. An active gate persists across restarts and regular pause, resume and live-entry controls cannot clear it. An authorized reset workflow is separate from these controls.
+
+The safety markers live in the shared control inbox. REST receipts are logged in api-log.jsonl next to the audit journal by default, with API_LOG_PATH overrides for Docker and systemd pointing to the writable controls directory. Request bodies and signed data are excluded. The full API and MCP audit writer belongs to the API-log batch.
+
+For the degraded-browser test, launch `node --import tsx scripts/safety-browser-fixture.ts` from the backend and run `node scripts/safety-controls.browser.mjs` from the frontend with its dev server active. Use the fixture only. It forces HTTP 500 for status and forwards safety calls to the real control service using an isolated temporary inbox.

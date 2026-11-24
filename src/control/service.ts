@@ -15,6 +15,7 @@ import { readRisk } from "../state/risk-config.js";
 import { commandSchema, ControlConflict, exitInput, Inbox, rejectInput, riskInput, toggle, liveExecutionInput } from "./commands.js";
 import { createPhase3Api } from "./phase3.js";
 import { HarnessGrants } from "../harness/policy.js";
+import { SafetyGate } from "./safety.js";
 import { join, dirname } from "node:path";
 
 export const auditQuery = z.strictObject({
@@ -76,6 +77,7 @@ export function createControl(options: { auditPath: string; riskPath: string; in
   const events = options.events ?? (() => readJournal(options.auditPath, true));
   const inbox = new Inbox(options.inboxPath ?? options.auditPath + ".controls");
   const harnessGrants = new HarnessGrants(join(inbox.path, "harness-grants"));
+  const safety = new SafetyGate(inbox.path);
   const risk = async () => (await readRisk(options.riskPath)) ?? { config: defaultRisk, as_of: null, actor: null };
   const phase3=createPhase3Api(events,inbox,options.budgetPath ?? process.env.BUDGET_PATH ?? join(dirname(options.auditPath),"budget.jsonl"));
   async function readableJournal() {
@@ -85,6 +87,7 @@ export function createControl(options: { auditPath: string; riskPath: string; in
   return {
     phase3,
     harnessGrants,
+    safety,
     readEvents: events,
     async health() {
       const journal = await readableJournal();
@@ -146,16 +149,17 @@ export function createControl(options: { auditPath: string; riskPath: string; in
       const modeAction = lastMode ? commandSchema.parse(lastMode.detail).action : undefined;
       const operatingMode = modeAction?.type === "phase3" && modeAction.command.type === "mode"
         ? modeAction.command.config.mode : modeConfigSchema.parse({mode: process.env.OPERATING_MODE || undefined}).mode;
-      return { loop_state: state, last_cycle_at: cycle?.at ?? null,
+      const signer_state = safety.state();
+      return { signer_state, loop_state: state, last_cycle_at: cycle?.at ?? null,
         operating_mode: operatingMode, cycle_duration_ms: detail?.duration_ms ?? null,
         loop_interval_sec: detail?.loop_interval_sec ?? (options.deployHealth ? options.deployHealth.intervalMs / 1000 : null),
         exposure_usd: positions.reduce((sum, row) => sum + row.position.cost_cents, 0) / 100,
         daily_pnl_usd: dailyPnl / 100,
         breaker_open: (detail?.breaker_until ?? 0) > Date.now(),
         breaker_until: detail?.breaker_until ?? null,
-        entries_paused: !!marker && commandSchema.parse(marker.detail).action.type === "pause",
+        entries_paused: signer_state !== "normal" || (!!marker && commandSchema.parse(marker.detail).action.type === "pause"),
         execution_mode: mode,
-        live_execution_enabled: mode === "live" && (liveAction?.type === "live-execution" && liveAction.enabled === true),
+        live_execution_enabled: signer_state === "normal" && mode === "live" && (liveAction?.type === "live-execution" && liveAction.enabled === true),
         open_positions: positions.length, current_equity: equity?.equity_usd ?? null,
         drawdown_pct: equity?.drawdown_pct ?? null };
     },
