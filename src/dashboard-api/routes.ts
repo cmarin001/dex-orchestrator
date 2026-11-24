@@ -15,8 +15,8 @@ import { projectTradeHistory } from "../logging/projections/trade-history.js";
 import { readJournal } from "../logging/logger.js";
 import type { JournalEvent } from "../logging/types.js";
 import { createControl, controlInputs } from "../control/service.js";
-import { ControlConflict } from "../control/commands.js";
-import { changes, reads, type Change } from "../control/phase3.js";
+import { ControlConflict, receiptInput } from "../control/commands.js";
+import { changes, InvalidProviderOrder, reads, type Change } from "../control/phase3.js";
 import { dashboardAccess, type DashboardAuthEnv } from "./auth.js";
 import { dashboardJwt, sensitiveScope } from "./jwt.js";
 import { walletOverview } from "./wallets.js";
@@ -29,7 +29,8 @@ import { dirname, join } from "node:path";
 import type { Context } from "hono";
 
 export const dashboardRoutes = new Set(["/permissions", "/harness/capabilities", "/health", "/equity", "/journal", "/live-view", "/live-view/stream", "/trades", "/risk-config"]);
-const apiPaths = new Set([...["health","status","positions","equity","audit","candidates","risk","wallets","system/health"],
+const receiptPath = "/api/v1/receipts/:request_id";
+const apiPaths = new Set([...["health","status","positions","equity","audit","candidates","risk","wallets","system/health","controls/providers/order"],
   ...safetyActions.map(name => "controls/" + name),
   ...Object.keys(controlInputs).map(name => "controls/" + name)].map(name => "/api/v1/" + name));
 
@@ -45,13 +46,13 @@ export function createDashboardApi(options: { token?: string; jwt?: ReturnType<t
   };
   const control = createControl(options);
   app.use("*", (c, next) => logHttp(dashboardRoutes.has(c.req.path) || apiPaths.has(c.req.path) || reflectionPaths.has(c.req.path) ? c.req.path :
+    /^\/api\/v1\/receipts\/[^/]+$/.test(c.req.path) ? receiptPath :
     entityRoutes.find(({ path }) => path === c.req.path ||
       (path.endsWith("/:id") && c.req.path.replace(/\/[^/]+$/, "/:id") === path))?.path ?? "unknown", c.req.method,
     async () => { await next(); return c.res; }));
-  if (options.origin) app.use("*", cors({ origin: options.origin, allowHeaders: ["Authorization", "Content-Type"],
+  if (options.origin) app.use("*", cors({ origin: options.origin,
+    allowHeaders: ["Authorization", "Content-Type", "Idempotency-Key"],
     allowMethods: ["GET", "POST", "PUT", "OPTIONS"] }));
-  if (options.origin) app.use("*", cors({ origin: options.origin, allowHeaders: ["Authorization", "Content-Type", "Idempotency-Key"],
-    allowMethods: ["GET", "POST", "OPTIONS"] }));
   app.use("*", async (c, next) => { c.header("Cache-Control", "no-store"); await next(); });
   const events = options.events ?? (() => readJournal(options.auditPath, true));
   const loopback = (c: Context<DashboardAuthEnv>) => {
@@ -205,6 +206,12 @@ export function createDashboardApi(options: { token?: string; jwt?: ReturnType<t
     });
     return input ? c.json(input) : c.json({error:"invalid_filters"},400);
   });
+  app.get(receiptPath, async c => {
+    const parsed = receiptInput.safeParse({ request_id: c.req.param("request_id") });
+    if (!parsed.success) return c.json({ error: "invalid_request_id" }, 400);
+    const result = await control.receipt(parsed.data, c.get("dashboardActor"));
+    return result ? c.json(result) : c.json({ error: "not_found" }, 404);
+  });
   for (const action of safetyActions) {
     const path = "/api/v1/controls/" + action;
     app.post(path, async c => {
@@ -247,8 +254,8 @@ export function createDashboardApi(options: { token?: string; jwt?: ReturnType<t
         if (denied) return denied;
       }
       try {
-        const result = await control.submit(name,body,c.get("dashboardActor"));
-        return c.json(result,result.state === "queued" ? 202 : 200);
+        const { receipt, created } = await control.submitCommand(name, body, c.get("dashboardActor"));
+        return c.json(receipt, created ? 202 : 200);
       } catch (error) {
         if (error instanceof ControlConflict) return c.json({error:error.message},409);
         throw error;
@@ -266,6 +273,7 @@ export function createDashboardApi(options: { token?: string; jwt?: ReturnType<t
   }
   const writes:Array<[string,Change]>=[
     ["/mode","set_mode"],["/chain","set_chain_routing"],["/controls/chain","set_chain_routing"],["/budget","set_budget"],
+    ["/controls/providers/order", "queue_controls_providers_order"],
     ["/providers/:id/enable","enable_provider"],["/providers/:id/disable","disable_provider"],
     ["/strategies/:id/enable","enable_strategy"],["/strategies/:id/disable","disable_strategy"],
     ["/strategies/:id/params","update_strategy_params"],["/strategies/reload","reload_strategies"],
@@ -287,9 +295,10 @@ export function createDashboardApi(options: { token?: string; jwt?: ReturnType<t
       const denied = requireElevated(c);
       if (denied) return denied;
       try {
-        const result=await control.phase3.mutate(action,body,c.get("dashboardActor"));
-        return c.json(result,result.state==="queued"?202:200);
+        const { receipt, created } = await control.phase3.submitCommand(action, body, c.get("dashboardActor"));
+        return c.json(receipt, created ? 202 : 200);
       } catch (error) {
+        if (error instanceof InvalidProviderOrder) return c.json({ error: "invalid_provider_order" }, 400);
         if (error instanceof ControlConflict) return c.json({error:error.message},409);
         throw error;
       }

@@ -4,7 +4,7 @@ import type { Command } from "./commands.js";
 import type { Phase3Command } from "../../schemas/control-plane.js";
 
 const names:Partial<Record<Phase3Command["type"],string>>={
-  mode:"mode.jsonl",chain:"chain.jsonl",budget:"budget.jsonl",provider:"providers.jsonl",
+  mode:"mode.jsonl",chain:"chain.jsonl",budget:"budget.jsonl",provider:"providers.jsonl",provider_order:"providers.jsonl",
   strategy:"strategies.jsonl",reload:"strategies.jsonl",
 };
 

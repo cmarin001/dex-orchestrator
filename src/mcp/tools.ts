@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { ZodObject } from "zod";
-import { empty, ControlConflict } from "../control/commands.js";
+import { empty, ControlConflict, receiptInput } from "../control/commands.js";
 import { auditQuery, controlInputs, type ControlService } from "../control/service.js";
 import { entityRoutes } from "../control/entity-reads.js";
 import { changes, input, type Change } from "../control/phase3.js";
@@ -46,6 +46,12 @@ export function createMcp(control: ControlService, actor: string, readOnly = fal
       return result;
     });
   }
+  tool("get_receipts_request_id", "Read your queued, applied or rejected worker command by its original request ID.", receiptInput, true,
+    async raw => {
+      const result = await control.receipt(raw, actor);
+      if (!result) throw new ControlConflict("Receipt not found");
+      return result;
+    });
   tool("get_status","Read the paper worker, breaker and entry pause state.",empty,true,control.status);
   tool("list_positions","Read open paper positions and their latest recorded marks.",empty,true,control.positions);
   tool("get_equity","Read published paper equity, drawdown and recent history.",empty,true,control.equity);

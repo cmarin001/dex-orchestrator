@@ -12,7 +12,7 @@ import { readJournal } from "../logging/logger.js";
 import type { JournalEvent } from "../logging/types.js";
 import type { Position } from "../state/positions.js";
 import { readRisk } from "../state/risk-config.js";
-import { commandSchema, ControlConflict, exitInput, Inbox, rejectInput, riskInput, toggle, liveExecutionInput } from "./commands.js";
+import { commandReceipt, commandSchema, ControlConflict, exitInput, Inbox, receiptInput, rejectInput, riskInput, toggle, liveExecutionInput } from "./commands.js";
 import { createPhase3Api } from "./phase3.js";
 import { HarnessGrants } from "../harness/policy.js";
 import { SafetyGate } from "./safety.js";
@@ -93,6 +93,33 @@ export function createControl(options: { auditPath: string; riskPath: string; in
   async function readableJournal() {
     if (!options.events) await access(options.auditPath);
     return events();
+  }
+  async function submit(type: Control, raw: unknown, actor: string) {
+    const { request_id = randomUUID(), ...body } = controlInputs[type].parse(raw);
+    const { command, created } = await inbox.submit(request_id, actor, JSON.stringify({type, body}), async () => {
+      switch (type) {
+        case "live-execution": return {type, enabled:liveExecutionInput.parse(raw).enabled};
+        case "pause": return {type};
+        case "resume": return {type};
+        case "risk": return {type, config:riskInput.parse(raw).config};
+        case "reject": {
+          const {chain,token} = rejectInput.parse(raw);
+          return {type, target:{chain,token}};
+        }
+        case "exit": {
+          const id = exitInput.parse(raw);
+          const matches = openPositions(await events()).filter(({position: p}) => id.run_id
+            ? p.run_id === id.run_id
+            : p.chain === id.chain && normalizeAddress(p.chain,p.token) === normalizeAddress(p.chain,id.token!));
+          if (matches.length !== 1) throw new ControlConflict("Expected exactly one open position");
+          const p = matches[0]!.position;
+          if (!p.exit_policy) throw new ControlConflict("Position has no exit policy");
+          const {run_id,chain,token,pair} = p;
+          return {type, position:{run_id,chain,token,pair}};
+        }
+      }
+    });
+    return { receipt: await commandReceipt(command, events, created), created };
   }
   return {
     phase3,
@@ -239,35 +266,14 @@ export function createControl(options: { auditPath: string; riskPath: string; in
       return { scanner: scan?.detail ?? null, watched: (cycle?.detail as { watched?: unknown })?.watched ?? [] };
     },
     risk,
+    submitCommand: submit,
     async submit(type: Control, raw: unknown, actor: string) {
-      const { request_id = randomUUID(), ...body } = controlInputs[type].parse(raw);
-      const command = await inbox.submit(request_id, actor, JSON.stringify({type, body}), async () => {
-        switch (type) {
-          case "live-execution": return {type, enabled:liveExecutionInput.parse(raw).enabled};
-          case "pause": return {type};
-          case "resume": return {type};
-          case "risk": return {type, config:riskInput.parse(raw).config};
-          case "reject": {
-            const {chain,token} = rejectInput.parse(raw);
-            return {type, target:{chain,token}};
-          }
-          case "exit": {
-            const id = exitInput.parse(raw);
-            const matches = openPositions(await events()).filter(({position: p}) => id.run_id
-              ? p.run_id === id.run_id
-              : p.chain === id.chain && normalizeAddress(p.chain,p.token) === normalizeAddress(p.chain,id.token!));
-            if (matches.length !== 1) throw new ControlConflict("Expected exactly one open position");
-            const p = matches[0]!.position;
-            if (!p.exit_policy) throw new ControlConflict("Position has no exit policy");
-            const {run_id,chain,token,pair} = p;
-            return {type, position:{run_id,chain,token,pair}};
-          }
-        }
-      });
-      const journal = await events();
-      const result = journal.findLast(e => e.stage === "control" && commandSchema.parse(e.detail).id === command.id);
-      return { request_id: command.id, actor: command.actor, action:command.action,
-        state: result ? result.status === "ok" ? "applied" : "rejected" : "queued", gaps:result?.gaps ?? [] };
+      return (await submit(type, raw, actor)).receipt;
+    },
+    async receipt(raw: unknown, actor: string) {
+      const { request_id } = receiptInput.parse(raw);
+      const command = await inbox.find(request_id);
+      return command?.actor === actor ? commandReceipt(command, events) : null;
     },
   };
 }

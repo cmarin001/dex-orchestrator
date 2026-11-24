@@ -58,3 +58,34 @@ test("authenticated Phase 3 controls queue revisions and approve exactly one qua
   assert.equal(rejected.state,"rejected");
   assert.equal(f.registry.get("volume-spike")?.evaluate(context)?.side,"buy");
 });
+
+test("provider order uses one actor receipt and rejects stale queued revisions at application", async t => {
+  const f = await fixture(t);
+  const paths = { token: "phase3-test", auditPath: join(f.dir, "audit.jsonl"),
+    riskPath: join(f.dir, "risk.jsonl"), inboxPath: join(f.dir, "commands"),
+    budgetPath: join(f.dir, "budget.jsonl"), initialCents: 100000, events: async () => f.events };
+  const app = createDashboardApi(paths);
+  const worker = new WorkerControls(new Inbox(paths.inboxPath), paths.riskPath, new ReconCache(), f.audit, false,
+    f.plane, new ConfigJournals(f.dir, paths.budgetPath));
+  const headers = { Authorization: "Bearer phase3-test", "Content-Type": "application/json" };
+  const read = async (path: string) => (await app.request("/api/v1/" + path, { headers })).json();
+  const post = (body: unknown) => app.request("/api/v1/controls/providers/order",
+    { headers, method: "POST", body: JSON.stringify(body) });
+  const current = await read("providers");
+  const next = { provider_ids: [...current.provider_order].reverse(), expected_revision: current.revision, request_id: "order-a" };
+  assert.equal((await post({ ...next, provider_ids: ["unknown"] })).status, 400);
+  assert.equal((await post(next)).status, 202);
+  const retry = await post(next);
+  assert.equal(retry.status, 200);
+  assert.equal((await retry.json()).request_id, "order-a");
+  assert.equal((await post({ ...next, request_id: "order-b" })).status, 202);
+  await worker.drain(f.pipeline.positions);
+  assert.deepEqual((await read("providers")).provider_order, next.provider_ids);
+  assert.equal((await read("providers")).revision, "order-a");
+  assert.equal((await read("receipts/order-a")).state, "applied");
+  const rejected = await read("receipts/order-b");
+  assert.equal(rejected.state, "rejected");
+  assert.deepEqual(rejected.gaps, ["stale_provider_order"]);
+  assert.equal((await post({ ...next, request_id: "order-c" })).status, 409);
+  assert.match(await readFile(join(f.dir, "providers.jsonl"), "utf8"), /"request_id":"order-a"/);
+});

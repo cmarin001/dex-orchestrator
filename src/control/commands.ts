@@ -4,11 +4,13 @@ import { join } from "node:path";
 import { z } from "zod";
 import { addressMatches, chainSchema, handoff, normalizeAddress } from "../../schemas/common.js";
 import { riskConfigSchema } from "../../schemas/risk-config.js";
+import type { JournalEvent } from "../logging/types.js";
 import { phase3Command } from "../../schemas/control-plane.js";
 
 export const empty = z.strictObject({});
 export const requestKey = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 const key = { request_id: requestKey.optional() };
+export const receiptInput = z.strictObject({ request_id: requestKey });
 export const toggle = z.strictObject(key);
 export const liveExecutionInput = z.strictObject({ ...key, enabled: z.boolean() });
 export const riskInput = z.strictObject({ ...key, config: riskConfigSchema });
@@ -33,6 +35,14 @@ export const commandSchema = z.strictObject({ id:requestKey, actor:z.string().mi
 export type Command = z.infer<typeof commandSchema>;
 export class ControlConflict extends Error {}
 
+export async function commandReceipt(command: Command, events: () => Promise<JournalEvent[]>, created = false) {
+  const result = created ? undefined : (await events()).findLast(event =>
+    event.stage === "control" && commandSchema.parse(event.detail).id === command.id);
+  return { request_id: command.id, actor: command.actor, action: command.action,
+    state: result ? result.status === "ok" ? "applied" as const : "rejected" as const : "queued" as const,
+    gaps: result?.gaps ?? [] };
+}
+
 // A complete, fsynced file becomes visible in one link. The worker marks it as completed
 // after journaling the outcome. Receipts keep retries stable across restarts.
 export class Inbox {
@@ -48,7 +58,7 @@ export class Inbox {
   async submit(id: string, actor: string, request: string, resolve: () => Promise<Command["action"]>) {
     const match = (existing: Command) => {
       if (existing.request !== request || existing.actor !== actor) throw new ControlConflict("request_id already used");
-      return existing;
+      return { command: existing, created: false };
     };
     const prior = await this.find(id);
     if (prior) return match(prior);
@@ -67,7 +77,7 @@ export class Inbox {
         return match(existing);
       }
       await this.sync();
-      return command;
+      return { command, created: true };
     } finally { await unlink(tmp); }
   }
   async sync() {

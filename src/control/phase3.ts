@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { phase3Command } from "../../schemas/control-plane.js";
+import { phase3Command, providerOrderFields } from "../../schemas/control-plane.js";
 import { modeConfigSchema } from "../../schemas/mode-config.js";
 import { chainRoutingSchema } from "../../schemas/chain-routing.js";
 import { budgetSchema } from "../../schemas/budget.js";
@@ -9,7 +9,9 @@ import { Budget } from "../providers/budget.js";
 import { Registry } from "../strategies/registry.js";
 import { initialSettings } from "../mode/config.js";
 import { ControlPlane } from "./plane.js";
-import { commandSchema, requestKey, type Inbox } from "./commands.js";
+import { commandReceipt, ControlConflict, requestKey, type Inbox } from "./commands.js";
+
+export class InvalidProviderOrder extends ControlConflict {}
 
 const id = z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/);
 const key = {request_id:requestKey.optional()};
@@ -19,6 +21,7 @@ export const input = {
   chain:z.strictObject({...key,config:chainRoutingSchema}),
   budget:z.strictObject({...key,config:budgetSchema}),
   provider:z.strictObject({...key,id}),
+  providerOrder: z.strictObject({ ...key, ...providerOrderFields }),
   strategy:z.strictObject({...key,id}),
   params:z.strictObject({...key,id,params:z.record(z.string(),z.unknown())}),
   reload:z.strictObject(key),
@@ -30,6 +33,9 @@ export const changes={
   set_mode:{schema:input.mode,action:(v:z.infer<typeof input.mode>)=>({type:"mode",config:v.config,reason:v.reason})},
   set_chain_routing:{schema:input.chain,action:(v:z.infer<typeof input.chain>)=>({type:"chain",config:v.config})},
   set_budget:{schema:input.budget,action:(v:z.infer<typeof input.budget>)=>({type:"budget",config:v.config})},
+  queue_controls_providers_order: { schema: input.providerOrder,
+    action: ({ provider_ids, expected_revision }: z.infer<typeof input.providerOrder>) =>
+      ({ type: "provider_order", provider_ids, expected_revision }) },
   enable_provider:{schema:input.provider,action:(v:z.infer<typeof input.provider>)=>({type:"provider",id:v.id,enabled:true})},
   disable_provider:{schema:input.provider,action:(v:z.infer<typeof input.provider>)=>({type:"provider",id:v.id,enabled:false})},
   enable_strategy:{schema:input.strategy,action:(v:z.infer<typeof input.strategy>)=>({type:"strategy",id:v.id,settings:{enabled:true}})},
@@ -51,7 +57,25 @@ export function createPhase3Api(events:()=>Promise<JournalEvent[]>,inbox:Inbox,b
     for (const row of journal) plane.replay(row);
     return { settings, registry, plane };
   }
+  async function mutate<T extends Change>(name: T, raw: unknown, actor: string) {
+    const change=changes[name];
+    const data=change.schema.parse(raw);
+    // The paired schema is parsed before constructing its action.
+    const make=change.action as (v:typeof data)=>unknown;
+    const command=phase3Command.parse(make(data));
+    const submitted = await inbox.submit(data.request_id ?? randomUUID(), actor, JSON.stringify(command), async () => {
+      if (command.type === "provider_order") {
+        const { plane } = await state(await events());
+        const failure = plane.validate(command);
+        if (failure === "invalid_provider_order") throw new InvalidProviderOrder(failure);
+        if (failure) throw new ControlConflict(failure);
+      }
+      return { type: "phase3", command };
+    });
+    return { receipt: await commandReceipt(submitted.command, events, submitted.created), created: submitted.created };
+  }
   return {
+    submitCommand: mutate,
     async chainConfig(journal: JournalEvent[]) {
       return (await state(journal)).settings.chain;
     },
@@ -80,7 +104,8 @@ export function createPhase3Api(events:()=>Promise<JournalEvent[]>,inbox:Inbox,b
         return {items:result};
       }
       const usage=await budget.status(settings.budget);
-      return {items:Object.entries(settings.definitions).filter(([id])=>!item||id===item).map(([id,cfg])=>{
+      return { provider_order: settings.policy.order, revision: plane.providerOrderRevision,
+        items:Object.entries(settings.definitions).filter(([id])=>!item||id===item).map(([id,cfg])=>{
         const result=journal.findLast(e=>e.stage==="model_provider" && healthRow.safeParse(e.detail).data?.provider===id);
         const health=healthRow.safeParse(result?.detail).data;
         const spent=usage.spent[id] ?? 0;
@@ -90,18 +115,8 @@ export function createPhase3Api(events:()=>Promise<JournalEvent[]>,inbox:Inbox,b
             (settings.budget.perProvider[id] ?? Infinity)-spent))};
       })};
     },
-    async mutate<T extends Change>(name:T,raw:unknown,actor:string) {
-      const change=changes[name];
-      const data=change.schema.parse(raw);
-      // The paired schema is parsed before constructing its action.
-      const make=change.action as (v:typeof data)=>unknown;
-      const command=phase3Command.parse(make(data));
-      const submitted=await inbox.submit(data.request_id ?? randomUUID(),actor,JSON.stringify(command),
-        async()=>({type:"phase3",command}));
-      const journal=await events();
-      const result=journal.findLast(row=>row.stage==="control"&&commandSchema.parse(row.detail).id===submitted.id);
-      return {request_id:submitted.id,actor,state:result?result.status==="ok"?"applied":"rejected":"queued",
-        gaps:result?.gaps ?? []};
+    async mutate<T extends Change>(name: T, raw: unknown, actor: string) {
+      return (await mutate(name, raw, actor)).receipt;
     },
   };
 }

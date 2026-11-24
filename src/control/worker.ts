@@ -24,7 +24,7 @@ export class WorkerControls {
     private readonly liveConfigured = false, private readonly plane?:ControlPlane, private readonly revisions?:ConfigJournals) { this.safety = new SafetyGate(inbox.path); }
   private apply(command: Command) {
     const action = command.action;
-    if (action.type === "phase3") this.plane?.apply(action.command);
+    if (action.type === "phase3") this.plane?.apply(action.command, command.id);
     if (action.type === "live-execution") this.liveEnabled = action.enabled;
     if (action.type === "pause" || action.type === "resume") this.entriesPaused = action.type === "pause";
     if (action.type === "reject") this.cache.reject(action.target);

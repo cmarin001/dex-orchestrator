@@ -18,7 +18,7 @@ test("MCP tools and resource use the same reads and command receipts as REST", a
   await server.connect(local);
   await client.connect(remote);
   t.after(() => client.close());
-  assert.equal((await client.listTools()).tools.length,37 + reflectionCatalog.filter(entry => entry.mcp_allowed).length);
+  assert.equal((await client.listTools()).tools.length,39 + reflectionCatalog.filter(entry => entry.mcp_allowed).length);
   async function call(name:string,args:Record<string,unknown> = {}) {
     const result = await client.callTool({name,arguments:args});
     assert.ok(!result.isError,JSON.stringify(result));
@@ -39,7 +39,10 @@ test("MCP tools and resource use the same reads and command receipts as REST", a
     ["pause_entries",{request_id:"p"}],["update_risk",{config}],["request_exit",{run_id:identity.run_id}],
     ["reject_token",{chain:target.chain,token:target.token}],
   ] as const) assert.equal((await call(tool,args))?.state,"queued");
+  assert.equal((await call("get_receipts_request_id", { request_id: "p" })).state, "queued");
+  assert.ok((await client.callTool({ name: "get_receipts_request_id", arguments: { request_id: "missing" } })).isError);
   await f.drain();
+  assert.equal((await call("get_receipts_request_id", { request_id: "p" })).state, "applied");
   assert.equal((await call("pause_entries",{request_id:"p"}))?.state,"applied");
   assert.equal((await call("get_status"))?.entries_paused,true);
   assert.deepEqual((await call("get_risk"))?.config,config);

@@ -39,7 +39,17 @@ test("authenticated dashboard HTTP reads and commands share the worker journal",
     assert.equal(response.status,202);
     assert.equal((await response.json()).actor,"desk");
   }
+  const firstReplay = await send("/controls/pause", { request_id: "pause" });
+  assert.equal(firstReplay.status, 200);
+  const pending = await firstReplay.json();
+  assert.deepEqual(pending, { request_id: "pause", actor: "desk", action: { type: "pause" }, state: "queued", gaps: [] });
+  assert.deepEqual(await (await send("/receipts/pause")).json(), pending);
+  assert.equal((await send("/receipts/not-found")).status, 404);
+  assert.equal((await send("/receipts/invalid.id")).status, 400);
+  const otherActor = createDashboardApi({ ...f.paths, token: "test", initialCents: 100000, actor: "other" });
+  assert.equal((await otherActor.request("/api/v1/receipts/pause", { headers: { Authorization: "Bearer test" } })).status, 404);
   await f.drain();
+  assert.equal((await (await send("/receipts/pause")).json()).state, "applied");
   assert.equal((await (await send("/status")).json()).entries_paused,true);
   assert.deepEqual((await (await send("/risk")).json()).config,config);
   assert.equal((await send("/controls/resume",{request_id:"pause"})).status,409);
