@@ -10,6 +10,7 @@ import { JevDecisionProvider } from "./jev.js";
 import { DecisionShadow } from "./shadow.js";
 import type { Audit } from "../logging/logger.js";
 import { DeterministicDecisionProvider } from "./local.js";
+import { paperEntryReview } from "./paper-entry.js";
 import { entryDecisionGate } from "./gate.js";
 
 export function configuredEntryGate(env:NodeJS.ProcessEnv,audit:Audit) {
@@ -66,4 +67,27 @@ export async function configuredShadow(env:NodeJS.ProcessEnv, auditPath:string, 
   const provider=new JevDecisionProvider(secret,config.responseModels);
   return new DecisionShadow(provider,audit,policy,signal,
     async()=>Boolean(await budget.reserve(provider.id,config.maxCostPerRequestUsd,limits)));
+}
+
+const paperReviewConfig=z.strictObject({
+  responseModels:z.array(z.string().min(1)).min(1),
+  approvalThreshold:z.number().gt(.5).max(1),
+  timeoutMs:z.number().int().min(50).max(4000).default(2000),
+  dailyBudgetUsd:z.number().positive(),
+  maxCostPerRequestUsd:z.number().positive(),
+}).refine(config=>config.maxCostPerRequestUsd<=config.dailyBudgetUsd,"Per-call reservation exceeds daily budget");
+
+export async function configuredJevPaperEntry(env:NodeJS.ProcessEnv, mode:"paper"|"live", auditPath:string, audit:Audit) {
+  if (!env.JEV_PAPER_ENTRY) return undefined;
+  if (mode!=="paper") throw new Error("JEV_PAPER_ENTRY_REQUIRES_PAPER_MODE");
+  const config=paperReviewConfig.parse(JSON.parse(env.JEV_PAPER_ENTRY));
+  const secret=await secretText(env,"AI_GATEWAY_API_KEY");
+  if (!secret) throw new Error("JEV_GATEWAY_CREDENTIAL_REQUIRED");
+  const budgetPath=auditPath+".jev-paper-budget.jsonl";
+  await requireSeparateJournal(budgetPath,auditPath);
+  const budget=new Budget(budgetPath);
+  const limits=budgetSchema.parse({dailyUsdCap:config.dailyBudgetUsd});
+  const provider=new JevDecisionProvider(secret,config.responseModels,config.timeoutMs);
+  return paperEntryReview(provider,audit,{...config,
+    reserve:async()=>Boolean(await budget.reserve(provider.id,config.maxCostPerRequestUsd,limits))});
 }

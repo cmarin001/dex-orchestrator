@@ -1,3 +1,4 @@
+import type { PaperEntryReview } from "../decisions/paper-entry.js";
 import { reconKey } from "../cache/merge.js";
 import { earlyMomentumId } from "../../schemas/early-momentum.js";
 import { selectMomentumOffer, momentumExitPolicy } from "../strategies/early-momentum/entry.js";
@@ -49,6 +50,7 @@ export interface Pipeline {
   entriesBlocked?: () => boolean;
   paperCosts?: PaperCosts;
   executionMode?: "paper"|"live";
+  paperEntryReview?: PaperEntryReview;
   momentumPositions?: MomentumPositions;
   entryDecision?: (snapshot:Merged,signal?:AbortSignal)=>Promise<boolean>;
   shadowCandidate?: (snapshot:Merged, outcome:"filled"|"skipped"|"unavailable")=>void;
@@ -163,6 +165,25 @@ export async function runCandidate(input: Merged, dependencies: Pipeline, ranked
   await record("sizer", { proposal, approved_cents: costCents, portfolio_capacity_cents: capacity });
   if (costCents === 0) return skip("zero_size");
 
+  let reviewId:string|undefined;
+  if (momentum && offer && dependencies.paperEntryReview) {
+    if (dependencies.executionMode!=="paper" || dependencies.live) return skip("paper_entry_review_requires_paper");
+    if (!fresh() || signal?.aborted || dependencies.entriesBlocked?.() || dependencies.deployment?.paused()) {
+      return skip("paper_entry_review_inactive");
+    }
+    const activity=momentum.data.activity;
+    if (!activity || activity.buys+activity.sells===0) return skip("paper_entry_review_missing_activity");
+    reviewId=await dependencies.paperEntryReview({
+      identity,deadline:Math.min(expires_at!,offer.buy.expiresAt,offer.sell.expiresAt,
+        offer.buy.observedAt+momentum.params.maxEvidenceAgeMs,offer.sell.observedAt+momentum.params.maxEvidenceAgeMs,
+        momentum.observedAt+momentum.params.maxEvidenceAgeMs),
+      facts:{pool_age_sec:age_sec,liquidity_usd:liquidity_usd,volume_1h_usd:vol_1h_usd,
+        buy_ratio:activity.buys/(activity.buys+activity.sells),proposed_cost_cents:costCents,
+        quoted_liquidation_cents:liquidationValue(offer.sell)},
+    },signal);
+    if (!reviewId) return skip("paper_entry_review_rejected");
+  }
+
   const exitBase = { entry_price: quote.value, entry_at: now(), min_profit_bps_for_exit: 25,
     timeout_ladder: config.timeout_ladder, max_hold_sec: 3600 };
   const basePolicy: ExitPolicy = dependencies.exitMode === "stop_loss"
@@ -222,7 +243,7 @@ export async function runCandidate(input: Merged, dependencies: Pipeline, ranked
     if (offer && !release) return skip("early_momentum_entry_in_progress");
     try {
       await audit({ identity, stage: "executor", status: "paper_fill", gaps: [], position,
-        ...(offer ? {detail:{version:1,strategyId:earlyMomentumId,state:"POSITION_OPEN",offer}} : costs ? {detail:{reference_price_usd:quote.value, reference_at:quote.fetched_at}} : {}) });
+        ...(offer ? {detail:{version:1,strategyId:earlyMomentumId,state:"POSITION_OPEN",offer,...(reviewId?{decision_id:reviewId}:{})}} : costs ? {detail:{reference_price_usd:quote.value, reference_at:quote.fetched_at}} : {}) });
       positions.record(position);
       log("info", "position.opened", { ...fields, outcome: "paper_fill" });
       if (offer) equity.markValue(position,liquidationValue(offer.sell),fillAt);

@@ -115,6 +115,18 @@ To compare an alternative with a full fixed exit, set `style` to `fixed` and `ta
 
 Enable the existing separate `DECISION_SHADOW` journal in paper hybrid mode and set `scope:"early_momentum"`. Keep the existing budgets and credentials. Use an exact all-in `notionalCents` represented in the evidence. Label only a later executable net liquidation quote with the sampled token quantity. Opportunities that never quote again stay unlabeled. The observer cannot change entry or exit behavior. Configure a label window wide enough to account for the actual candidate loop cadence. See [the shadow calibration guide](modular-platform.md#extend-a-decision-provider).
 
+### Let Jev approve paper execution
+
+Set `EXECUTION_MODE=paper`, `OPERATING_MODE=hybrid`, and mount `AI_GATEWAY_API_KEY_FILE`. Enable the strategy separately through its existing control. Hybrid's paid reasoning advisory may stay disabled. Configure `JEV_PAPER_ENTRY` with the exact verified response model ID and explicit budget limits.
+
+```dotenv
+JEV_PAPER_ENTRY={"responseModels":["typesafe-ai/jev"],"approvalThreshold":0.85,"timeoutMs":1500,"dailyBudgetUsd":0.10,"maxCostPerRequestUsd":0.01}
+```
+
+The example amounts are reservation limits. Set the per-request reservation based on your account's verified maximum request cost. The worker reserves that amount in a separate journal and uses a dedicated paper-entry audit stage. The model sees only numerical market facts and the already selected paper economics. An approval can advance one qualifying Early Momentum Reversal entry to the existing Executor. Skip, abstention, approval below the threshold, expiry, outage, or exhausted budget skips that entry. The normal human authorization, risk refresh, quote checks, and pause controls still apply. Exits and unrelated strategies continue through their existing paths.
+
+Clear `JEV_PAPER_ENTRY` and restart the paper worker to resume deterministic handling. The `DECISION_SHADOW` setting remains independent. If both are enabled, their requests count against their own budgets.
+
 Use the standalone Hermes research CLI and read-only MCP to review candidate, fill, monitor, and close audit events. Seed research with recorded rejections and unfilled opportunities as well as outcomes. Hermes may propose parameter changes. The normal strategy control and its operator approval own configuration changes.
 
 Replay through `npm run research:replay -- REPLAY_SPEC.json`. Use one canonical pool per chain and token in a tape and provide point-in-time quote, candle, liquidity, and Rug Check evidence. The replay fills at the next eligible observation and uses the managed policy for the same net exit logic. Legacy baselines use the configured paper-cost model. Supported comparisons include `dip-buy`, `new-pair-momentum`, `momentum-ladder`, `new-pool-snipe`, `no-trade`, and `combined-deterministic`. Replay reports net expectancy and return, drawdown on realized equity, frequency, cost, execution success, MFE/MAE, and the fraction of closed positions with no positive observed excursion. Use chronological forward validation and preserve censored outcomes and rejected assets in the input tape.

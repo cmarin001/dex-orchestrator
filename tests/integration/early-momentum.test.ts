@@ -3,6 +3,8 @@ import { test } from "node:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { applySetting } from "../../src/mode/config.js";
+import { JevDecisionProvider } from "../../src/decisions/jev.js";
+import { paperEntryReview } from "../../src/decisions/paper-entry.js";
 import { ModeRuntime } from "../../src/mode/runtime.js";
 import { StrategyEvidence } from "../../src/strategies/evidence.js";
 import { MomentumPositions, managedPolicy } from "../../src/strategies/early-momentum/monitor.js";
@@ -29,16 +31,40 @@ test("opt-in paper entry honors risk, journals one fill, and recovers trailing s
   await write(at);
   const runtime=new ModeRuntime(f.plane,async()=>{throw new Error("paid AI must stay off");},new StrategyEvidence(evidencePath));
   const momentum=new MomentumPositions([],new StrategyEvidence(evidencePath));
-  const pipeline={...f.pipeline,mode:runtime,call:runtime.call,momentumPositions:momentum};
+  let calls=0;
+  let vote="skip";
+  const model="typesafe-ai/jev";
+  const jev=new JevDecisionProvider("fixture",[model],500,async (_url,init)=>{
+    calls++;
+    const request=JSON.parse(String(init?.body));
+    assert.equal(request.questions[0].name,"paper_entry");
+    assert.equal(JSON.parse(request.input).proposed_cost_cents,998);
+    assert.equal(String(request.input).includes(id.token),false);
+    return Response.json({model,answers:[{name:"paper_entry",type:"choice",choice:vote,confidence:.91,
+      probabilities:[{value:"approve",probability:vote==="approve"?.92:.01},
+        {value:"skip",probability:vote==="skip"?.92:.01},{value:"abstain",probability:.07}]}]});
+  });
+  const pipeline={...f.pipeline,mode:runtime,call:runtime.call,momentumPositions:momentum,executionMode:"paper" as const,
+    paperEntryReview:paperEntryReview(jev,f.audit,{approvalThreshold:.8,timeoutMs:500,reserve:async()=>true})};
   await runtime.beginCycle(Date.now());
   assert.equal(await runCandidate({...f.snapshot(),sources_disagree:true},pipeline),"skipped");
   const unsafe=f.snapshot();
   assert.equal(await runCandidate({...unsafe,checks_raw:{...unsafe.checks_raw,honeypot_sim_ok:false,
     blacklist_present:true}},pipeline),"skipped");
   assert.equal(await runCandidate(f.snapshot(),{...pipeline,executionMode:"live"}),"skipped");
+  assert.equal(calls,0);
+  assert.equal(await runCandidate(f.snapshot(),pipeline),"skipped");
+  assert.equal(f.pipeline.positions.count,0);
+  assert.ok(f.events.some(event=>event.stage==="paper_entry_review" && event.gaps.includes("rejected")));
+  vote="approve";
   const result=await Promise.all([runCandidate(f.snapshot(),pipeline),runCandidate(f.snapshot(),pipeline)]);
   assert.equal(result.filter(x=>x==="paper_fill").length,1,JSON.stringify(f.events.filter(e=>e.status==="skipped")));
-  assert.equal(f.events.filter(e=>e.status==="paper_fill").length,1);
+  const fills=f.events.filter(e=>e.status==="paper_fill");
+  assert.equal(fills.length,1);
+  const decisionId=(fills[0]!.detail as {decision_id:string}).decision_id;
+  assert.ok(decisionId);
+  assert.ok(f.events.some(e=>e.stage==="paper_entry_review" && e.status==="ok" &&
+    (e.detail as {decision_id:string}).decision_id===decisionId));
   const [position]=pipeline.positions.list();
   assert.ok(position);
   assert.equal(position.cost_cents,998);
@@ -48,6 +74,7 @@ test("opt-in paper entry honors risk, journals one fill, and recovers trailing s
   assert.equal(managedPolicy(position.exit_policy)?.tokenAmount,4.95);
   assert.equal(pipeline.equity.markedCapitalCents,100_000-16);
 
+  const callsAtEntry=calls;
   const highAt=Date.now()+20;
   await write(highAt,1210);
   await momentum.evidence.refresh(highAt);
@@ -67,6 +94,7 @@ test("opt-in paper entry honors risk, journals one fill, and recovers trailing s
   } finally { clearTimeout(timeout); }
   const close=f.events.find(e=>e.status==="paper_close");
   assert.equal(close?.close?.proceeds_cents,1112);
+  assert.equal(calls,callsAtEntry);
   assert.equal((close?.detail as {reason:string}).reason,"trailing_stop");
   assert.equal(pipeline.equity.availableCapital,100_114);
   const replay=new MomentumPositions(f.events,new StrategyEvidence(evidencePath));

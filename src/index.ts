@@ -1,7 +1,7 @@
 import { earlyMomentumId } from "../schemas/early-momentum.js";
 import { managedPolicy, MomentumPositions } from "./strategies/early-momentum/monitor.js";
 import { dexScreenerMarks } from "./market-data/dexscreener.js";
-import { configuredEntryGate, configuredShadow } from "./decisions/composition.js";
+import { configuredEntryGate, configuredShadow, configuredJevPaperEntry } from "./decisions/composition.js";
 import { paperCostsSchema } from "./domain/paper-costs.js";
 import { isFill, isClose } from "./logging/types.js";
 import { chartPointSchema } from "../schemas/live-view.js";
@@ -68,6 +68,7 @@ async function main(): Promise<void> {
   log("info", "worker.starting");
   const env = config.parse(process.env);
   const mode = z.enum(["paper","live"]).default("paper").parse(process.env.EXECUTION_MODE);
+  if (mode === "live" && process.env.JEV_PAPER_ENTRY) throw new Error("JEV_PAPER_ENTRY_REQUIRES_PAPER_MODE");
   if (mode === "live" && env.AUDIT_PATH === "data/audit.jsonl") throw new Error("LIVE_AUDIT_PATH_REQUIRED");
   if (mode === "paper") return run(env, mode);
   await mkdir(dirname(env.AUDIT_PATH), { recursive:true,mode:0o700 });
@@ -88,6 +89,7 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
   const wallet = mode === "live" ? await configuredWallet(process.env) : undefined;
   const journal = await readJournal(env.AUDIT_PATH);
   const audit = fileAudit(env.AUDIT_PATH);
+  const review=await configuredJevPaperEntry(process.env,mode,env.AUDIT_PATH,audit);
   const entryDecision=mode==="paper" ? configuredEntryGate(process.env,audit) : undefined;
   const address = await wallet?.adapter.address();
   const previousMode = journal.find(event => event.stage === "execution_mode");
@@ -183,6 +185,8 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
   const momentumPositions=new MomentumPositions(journal,new StrategyEvidence(process.env.STRATEGY_EVIDENCE_PATH || undefined));
   const pipeline = {
     call: runtime.call, mode:runtime, audit, live, deployment, paperCosts, entryDecision, executionMode:mode, momentumPositions,
+    paperEntryReview:review ? (entry:Parameters<typeof review>[0],signal?:AbortSignal)=>
+      runtime.usesTypedDecisions() ? review(entry,signal) : Promise.resolve(undefined) : undefined,
     shadowCandidate:shadow ? (snapshot: Parameters<typeof shadow.observe>[0],outcome: Parameters<typeof shadow.observe>[1]) => {
       if (!runtime.usesTypedDecisions()) return;
       if (shadow.scope==="early_momentum") {
