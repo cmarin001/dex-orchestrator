@@ -4,7 +4,7 @@ import { managedPolicy, MomentumPositions } from "./strategies/early-momentum/mo
 import { dexScreenerMarks } from "./market-data/dexscreener.js";
 import { configuredEntryGate, configuredShadow, configuredJevPaperEntry, configuredJevTrading } from "./decisions/composition.js";
 import { paperCostsSchema } from "./domain/paper-costs.js";
-import { isFill, isClose } from "./logging/types.js";
+import { isFill, isClose, type JournalEvent } from "./logging/types.js";
 import { chartPointSchema } from "../schemas/live-view.js";
 import { normalizeAddress, targetSchema } from "../schemas/common.js";
 import { readFile, mkdir, open, unlink } from "node:fs/promises";
@@ -63,6 +63,36 @@ const config = z.object({
   MAX_RISK_CONFIG_AGE_SEC: integer.default(3600),
   GOPLUS_ACCESS_TOKEN: z.string().optional(),
 });
+
+function restoreTradingState(journal: readonly JournalEvent[], positions: Positions, equity: Equity, cache: ReconCache): void {
+  for (const event of journal) {
+    const { position, close, identity } = event;
+    if (event.stage === "rug-check" && identity &&
+        rugCheckSchema.safeParse(event.detail).data?.verdict === "FAIL") {
+      cache.reject(identity);
+    } else if (isFill(event.status) && position) {
+      positions.record(position);
+      const reference=z.object({reference_price_usd:z.number().positive(),reference_at:z.number().int()}).safeParse(event.detail);
+      const momentumPolicy=managedPolicy(position.exit_policy);
+      if (momentumPolicy) equity.markValue(position,momentumPolicy.initialProceedsCents,position.exit_policy!.entry_at);
+      else if (position.paper_costs && reference.success) equity.mark(position,reference.data.reference_price_usd,reference.data.reference_at);
+      else equity.mark(position, position.entry_price_usd, Date.parse(event.at));
+    } else if (isClose(event.status) && position && close) {
+      positions.close(position);
+      equity.close(position, close.proceeds_cents, close.exit_at);
+    } else if (event.stage === "early_momentum_monitor" && identity) {
+      const open=positions.get(identity);
+      const mark=z.object({lastProceedsCents:z.number().int().nonnegative(),lastQuoteAt:z.number().int()}).parse(event.detail);
+      if (open?.run_id===identity.run_id && managedPolicy(open.exit_policy) && mark.lastQuoteAt>=0) {
+        equity.markValue(open,mark.lastProceedsCents,mark.lastQuoteAt);
+      }
+    } else if (event.stage === "position_mark" && identity) {
+      const open = positions.get(identity);
+      const point = chartPointSchema.safeParse(event.detail);
+      if (open && !managedPolicy(open.exit_policy) && open.run_id === identity.run_id && point.success) equity.mark(open, point.data.price, point.data.t);
+    }
+  }
+}
 
 async function main(): Promise<void> {
   log("info", "worker.starting");
@@ -134,33 +164,7 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
   const uniqueTargets = [...new Map(targets.map((target) => [targetKey(target), target])).values()];
   const equity = new Equity(env.INITIAL_EQUITY_CENTS);
 
-  for (const event of journal) {
-    const { position, close, identity } = event;
-    if (event.stage === "rug-check" && identity &&
-        rugCheckSchema.safeParse(event.detail).data?.verdict === "FAIL") {
-      cache.reject(identity);
-    } else if (isFill(event.status) && position) {
-      positions.record(position);
-      const reference=z.object({reference_price_usd:z.number().positive(),reference_at:z.number().int()}).safeParse(event.detail);
-      const momentumPolicy=managedPolicy(position.exit_policy);
-      if (momentumPolicy) equity.markValue(position,momentumPolicy.initialProceedsCents,position.exit_policy!.entry_at);
-      else if (position.paper_costs && reference.success) equity.mark(position,reference.data.reference_price_usd,reference.data.reference_at);
-      else equity.mark(position, position.entry_price_usd, Date.parse(event.at));
-    } else if (isClose(event.status) && position && close) {
-      positions.close(position);
-      equity.close(position, close.proceeds_cents, close.exit_at);
-    } else if (event.stage === "early_momentum_monitor" && identity) {
-      const open=positions.get(identity);
-      const mark=z.object({lastProceedsCents:z.number().int().nonnegative(),lastQuoteAt:z.number().int()}).parse(event.detail);
-      if (open?.run_id===identity.run_id && managedPolicy(open.exit_policy) && mark.lastQuoteAt>=0) {
-        equity.markValue(open,mark.lastProceedsCents,mark.lastQuoteAt);
-      }
-    } else if (event.stage === "position_mark" && identity) {
-      const open = positions.get(identity);
-      const point = chartPointSchema.safeParse(event.detail);
-      if (open && !managedPolicy(open.exit_policy) && open.run_id === identity.run_id && point.success) equity.mark(open, point.data.price, point.data.t);
-    }
-  }
+  restoreTradingState(journal, positions, equity, cache);
   await audit({stage:"worker_replay",status:"ok",gaps:[],detail:{position_keys:positions.list().map(tradeKey).sort()}});
   const live = wallet && wallet.stable && signer
     ? createLiveExecution({...wallet, signer, audit, journal, positions, equity, enabled,entryAllowed: () => !deployment.paused(),exitAllowed: () => controls.liveExitEnabled,onClose:(chain,pnl)=>plane.noteClose(chain,pnl)}) : undefined;

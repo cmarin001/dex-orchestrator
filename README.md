@@ -1,6 +1,8 @@
-# trade-bot
+# DEX Orchestrator
 
-TypeScript ESM scaffold for a nine-prompt DEX pipeline. The standard entry point runs **paper trades** using public provider reads. The Executor includes offline EVM and Solana signing for transactions supplied by trusted code. Live routing, broadcast, receipt reconciliation, exits, and a social data feed are integration boundaries.
+TypeScript trading worker with a nine-stage agent pipeline, a dashboard API, and MCP interfaces. The default worker runs deterministic **paper trades** using public provider reads. Live execution and optional model-backed decisions have separate configuration and authorization requirements.
+
+[Documentation index](docs/README.md) · [Architecture audit](docs/architecture-audit.md) · [Mermaid runtime flows](docs/architecture-flows.md)
 
 ## Run
 
@@ -15,7 +17,7 @@ cp .env.example .env
 
 Set a nonempty `WATCHLIST` or enable discovery in `.env`. The default strategy mode makes zero model calls and needs no provider key. Base is enabled first. Each watchlist element supplies `chain`, the base `token` address, and the liquidity-pool `pair` address. Supported chain identifiers are `ethereum`, `bsc`, `base`, `solana`, `polygon`, `arbitrum`, and `optimism`. Run `npm start` to start the control loop. Use Ctrl+C to stop. Use one process per audit journal. The startup path replays simulated fills from the journal, restoring committed position costs. Market marks refresh after restart.
 
-Amounts and position limits use integer USD cents and basis points. Paper fills use an observed USD price and omit fees, slippage, routing, and settlement. The fixtures contain recorded public provider responses. Tests use those recordings, synthetic candidates, and mocked OpenAI calls. Optional AI and hybrid modes use the configured Chat Completions providers with schema validation.
+Amounts and position limits use integer USD cents and basis points. Legacy paper fills use an indicative USD price. The optional paper cost model adds trading costs, and Early Momentum Reversal uses qualified quote evidence. The fixtures contain recorded public provider responses. Tests use those recordings, synthetic candidates, and mocked OpenAI calls. Optional AI and hybrid modes use the configured Chat Completions providers with schema validation.
 
 [Prompt conformance and verification](docs/conformance.md) · [Architecture](docs/architecture.md) · [Modular platform and integration guide](docs/modular-platform.md) · [Schemas](docs/schemas.md) · [Runtime ADR](docs/adr/0001-runtime.md)
 

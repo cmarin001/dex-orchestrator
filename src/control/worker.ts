@@ -11,6 +11,18 @@ import { SafetyGate } from "./safety.js";
 import { transition } from "../mode/switch.js";
 import type { ConfigJournals } from "./config-journals.js";
 
+function commandGap(action: Command["action"], positions: Positions, liveConfigured: boolean, plane?: ControlPlane) {
+  if (action.type === "phase3") return plane ? plane.validate(action.command) : "control_plane_unconfigured";
+  if (action.type === "exit") {
+    const position = positions.get(action.position);
+    if (!position?.exit_policy || tradeKey(position) !== tradeKey(action.position)) {
+      return "position_closed_or_ineligible";
+    }
+  }
+  if (action.type === "live-execution" && action.enabled && !liveConfigured) return "live_execution_not_configured";
+  return null;
+}
+
 export class WorkerControls {
   private entriesPaused = false;
   private discretionaryExitsPaused = false;
@@ -45,11 +57,7 @@ export class WorkerControls {
     for (const cmd of await this.inbox.pending()) {
       if (!this.completed.has(cmd.id)) {
         const a = cmd.action;
-        const position = a.type === "exit" ? positions.get(a.position) : undefined;
-        const gap = a.type === "phase3" ? (this.plane ? this.plane.validate(a.command) : "control_plane_unconfigured")
-          : a.type === "exit" && (!position?.exit_policy || tradeKey(position) !== tradeKey(a.position))
-          ? "position_closed_or_ineligible"
-          : a.type === "live-execution" && a.enabled && !this.liveConfigured ? "live_execution_not_configured" : null;
+        const gap = commandGap(a, positions, this.liveConfigured, this.plane);
         if (a.type === "risk") {
           const revision = {config:a.config, actor:cmd.actor, as_of:cmd.at};
           const current = await readRisk(this.riskPath);
