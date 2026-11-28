@@ -18,7 +18,14 @@ export const positionSchema = z.strictObject({
 export type Position = z.infer<typeof positionSchema>;
 
 export class Positions {
+  #committingPaperEntry=false;
   readonly #open = new Map<string, Position>();
+
+  beginPaperEntry(): (()=>void) | undefined {
+    if (this.#committingPaperEntry) return undefined;
+    this.#committingPaperEntry=true;
+    return ()=>{ this.#committingPaperEntry=false; };
+  }
 
   get(target: Target): Position | undefined {
     return this.#open.get(targetKey(target));

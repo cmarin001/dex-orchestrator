@@ -6,7 +6,6 @@ import { configuredEntryGate, configuredShadow, configuredJevPaperEntry, configu
 import { paperCostsSchema } from "./domain/paper-costs.js";
 import { isFill, isClose } from "./logging/types.js";
 import { chartPointSchema } from "../schemas/live-view.js";
-import { defaultRisk } from "../schemas/risk-config.js";
 import { normalizeAddress, targetSchema } from "../schemas/common.js";
 import { readFile, mkdir, open, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -22,7 +21,7 @@ import { Equity } from "./state/equity.js";
 import { Positions } from "./state/positions.js";
 import { watchPositions } from "./exits/watcher.js";
 
-import { readRisk, requireFreshRisk } from "./state/risk-config.js";
+import { riskSnapshot } from "./state/risk-config.js";
 import { rugCheckSchema } from "../schemas/rug-check.js";
 import { scopeSchema } from "./tools/discovery.js";
 import { Inbox } from "./control/commands.js";
@@ -186,6 +185,7 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
   const runtime=new ModeRuntime(plane,providerAgent(router,()=>settings,abort.signal),new StrategyEvidence(process.env.STRATEGY_EVIDENCE_PATH || undefined));
   const shadow=mode==="paper" ? await configuredShadow(process.env,env.AUDIT_PATH,abort.signal) : undefined;
   const momentumPositions=new MomentumPositions(journal,new StrategyEvidence(process.env.STRATEGY_EVIDENCE_PATH || undefined));
+  const readRiskSnapshot=()=>riskSnapshot(env.RISK_CONFIG_PATH,env.REQUIRE_RISK_CONFIG==="true",env.MAX_RISK_CONFIG_AGE_SEC*1000);
   const pipeline = {
     call: runtime.call, mode:runtime, audit, live, deployment, paperCosts, entryDecision, executionMode:mode, momentumPositions,
     jevBuy:trading?.buy,
@@ -203,11 +203,8 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
     entriesBlocked: () => controls.paused,
     exitMode: env.PAPER_EXIT_MODE,
     equityMaxAgeMs: env.MAX_EQUITY_AGE_SEC * 1000,
-    riskConfig: async () => {
-      const revision = await readRisk(env.RISK_CONFIG_PATH);
-      return revision || env.REQUIRE_RISK_CONFIG === "true"
-        ? requireFreshRisk(revision, Date.now(), env.MAX_RISK_CONFIG_AGE_SEC * 1000) : defaultRisk;
-    },
+    riskConfig:async()=> (await readRiskSnapshot()).config,
+    riskSnapshot:live ? readRiskSnapshot : undefined,
     equity, positions, maxPositionBps: env.MAX_POSITION_BPS, maxOpenPositions: env.MAX_OPEN_POSITIONS,
   };
   const sellRequests=trading ? new JevExitRequests(trading.sell,

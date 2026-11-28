@@ -1,3 +1,4 @@
+import type { EntryAuthorization } from "../execution/port.js";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import { transactionIntentSchema } from "../../schemas/transaction-intent.js";
@@ -16,7 +17,7 @@ export interface Signer {
   chain: WalletChain;
   address(): Promise<string>;
   simulate(intent: TransactionIntent): Promise<SimulationResult>;
-  signAndSend(intent: TransactionIntent, allowed?: () => boolean): Promise<TxReceipt>;
+  signAndSend(intent: TransactionIntent, allowed?: () => boolean, authorization?: EntryAuthorization): Promise<TxReceipt>;
   reconcile(intent: TransactionIntent): Promise<TxReceipt | null>;
 }
 
@@ -82,7 +83,7 @@ export function createSigner(adapter: ChainAdapter, caps: WalletConfig, audit: A
     }
     return intent;
   };
-  async function execute(raw: TransactionIntent, recoverOnly: boolean, allowed?: () => boolean): Promise<TxReceipt | null> {
+  async function execute(raw: TransactionIntent, recoverOnly: boolean, allowed?: () => boolean, authorization?: EntryAuthorization): Promise<TxReceipt | null> {
     const intent = parse(raw);
     const hash = createHash("sha256").update(JSON.stringify(intent)).digest("hex");
     const run_id = intent.run_id;
@@ -148,16 +149,26 @@ export function createSigner(adapter: ChainAdapter, caps: WalletConfig, audit: A
       if (!enabled(intent)) throw new Error("LIVE_EXECUTION_DISABLED");
       if (allowed?.() === false) throw new Error("DEPLOYMENT_PAUSED");
     }
+    async function checkRevision() {
+      let current=false;
+      try { current=await authorization!.current()===true; }
+      catch { /* A missing or malformed revision fails closed for new entries. */ }
+      if (!current) throw new Error("RISK_REVISION_CHANGED");
+    }
     async function send(prepared: Prepared) {
       requireSimulation(intent, prepared.simulation);
       await audit({stage:"wallet_simulation",status:"ok",gaps:[],detail:{run_id,simulation:prepared.simulation}});
+      if (authorization) await checkRevision();
       checkCurrentAuthorization();
       const signed = await prepared.sign();
       const identifier = identifierSchema.parse({id:signed.id,expires_at_height:signed.expires_at_height});
       if (active.some(attempt => attempt.id === identifier.id)) throw new Error("DUPLICATE_REPLACEMENT");
       checkCurrentAuthorization();
       await record({event:"signed",run_id,identifier});
-      try { checkCurrentAuthorization(); }
+      try {
+        if (authorization) await checkRevision();
+        checkCurrentAuthorization();
+      }
       catch (error) {
         await record({event:"withheld",run_id,identifier});
         throw error;
@@ -165,6 +176,13 @@ export function createSigner(adapter: ChainAdapter, caps: WalletConfig, audit: A
       await broadcastSigned(signed, bytes => adapter.broadcast(bytes));
     }
     try {
+      if (authorization) {
+        if (intent.reduce_only || !/^[a-f0-9]{64}$/.test(authorization.revision)) throw new Error("RISK_REVISION_CHANGED");
+        await checkRevision();
+        checkCurrentAuthorization();
+        await audit({stage:"wallet_authorization",status:"ok",gaps:[],
+          detail:{version:1,run_id,revision:authorization.revision,intent_hash:hash}});
+      }
       const prepared = replacement ? await adapter.replace!(intent,replacement) : await adapter.prepare(intent);
       if (!prepared) return known!;
       await send(prepared);
@@ -181,17 +199,17 @@ export function createSigner(adapter: ChainAdapter, caps: WalletConfig, audit: A
     address: () => adapter.address(),
     simulate: async intent => (await adapter.prepare(parse(intent))).simulation,
     reconcile(intent) { return enqueue(intent,true); },
-    async signAndSend(intent, allowed) { return (await enqueue(intent,false,allowed))!; },
+    async signAndSend(intent, allowed, authorization) { return (await enqueue(intent,false,allowed,authorization))!; },
   };
-  function enqueue(intent: TransactionIntent, recoverOnly: boolean, allowed?: () => boolean) {
+  function enqueue(intent: TransactionIntent, recoverOnly: boolean, allowed?: () => boolean, authorization?: EntryAuthorization) {
     const result = queue.then(async () => {
       const initial = !reservations.get(intent.run_id)?.attempts.length;
-      const receipt = await execute(intent,recoverOnly,allowed);
+      const receipt = await execute(intent,recoverOnly,allowed,authorization);
       if (recoverOnly || !initial || !adapter.replace || receipt?.status !== "pending") return receipt;
-      try { return await execute(intent,false,allowed); }
+      try { return await execute(intent,false,allowed,authorization); }
       catch (error) {
         if (error instanceof Error && ["FEE_LIMIT_EXCEEDED","INTENT_EXPIRED",
-          "DAILY_LIMIT_EXCEEDED","PER_TRADE_LIMIT_EXCEEDED","BITCOIN_MEMPOOL_REJECTED","DEPLOYMENT_PAUSED","SIGNER_DISARMED","REDUCE_ONLY_VIOLATION"].includes(error.message)) return receipt;
+          "DAILY_LIMIT_EXCEEDED","PER_TRADE_LIMIT_EXCEEDED","BITCOIN_MEMPOOL_REJECTED","DEPLOYMENT_PAUSED","SIGNER_DISARMED","REDUCE_ONLY_VIOLATION","RISK_REVISION_CHANGED"].includes(error.message)) return receipt;
         throw error;
       }
     });

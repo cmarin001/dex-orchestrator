@@ -168,3 +168,5 @@ A 20,000-evaluation fixture run measured **0.010 ms p50**, **0.019 ms p95**, and
 The managed strategy recorded one failed entry and one pending exit without a route. Legacy baselines have different exit policies and use configured paper costs. The comparison demonstrates fixture behavior and leaves realized outcomes for open positions censored.
 
 A complete read-only quote and sell-simulation collector, independent organic-demand detectors and a representative historical tape remain deployment prerequisites. Authenticated Jev and Hermes sessions were outside the executed tests. Paper fills model observed quote economics and skip trades when evidence is missing. Paper execution does not generate on-chain failed-transaction debits, and the replay lacks a historical failed-fee and real confirmation-latency model. Unavailable exits remain visible as open or pending positions, so realized-return metrics should be read alongside exposure and labeling coverage.
+
+For offline evaluation of recorded buy reviews, use [paired chronological replay](modular-platform.md#hermes-and-standalone-research). Both arms use the same forward windows, execution rules and costs.

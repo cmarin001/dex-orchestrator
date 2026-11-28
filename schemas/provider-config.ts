@@ -28,6 +28,7 @@ export const providerPolicySchema = z.strictObject({
   order: z.array(z.string()).default(["local","deepseek","grok","openai"]),
   mode: z.enum(["cost","latency","quality","round_robin"]).default("cost"),
   fallback_on: z.array(z.enum(["error","rate_limit","timeout","schema_mismatch"])).default(["error","rate_limit","timeout","schema_mismatch"]),
+  retryLimit: z.number().int().min(0).max(2).optional(),
   healthCheckIntervalSec: z.number().int().positive().default(60),
 });
 export type ProviderConfig = z.infer<typeof providerConfigSchema>;

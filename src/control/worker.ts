@@ -1,6 +1,6 @@
 import { isClose } from "../logging/types.js";
 import { tradeKey } from "../../schemas/common.js";
-import type { ReconCache } from "../cache/recon-cache.js";
+import type { ReconStore } from "../cache/contract.js";
 import type { Audit } from "../logging/logger.js";
 import type { JournalEvent } from "../logging/types.js";
 import type { Positions } from "../state/positions.js";
@@ -22,7 +22,7 @@ export class WorkerControls {
   get liveExitEnabled() { return this.liveConfigured && this.safety.state() !== "disarmed"; }
   readonly exits = new Set<string>();
   private readonly completed = new Set<string>();
-  constructor(private inbox: Inbox, private riskPath: string, private cache: ReconCache, private audit: Audit,
+  constructor(private inbox: Inbox, private riskPath: string, private cache: ReconStore, private audit: Audit,
     private readonly liveConfigured = false, private readonly plane?:ControlPlane, private readonly revisions?:ConfigJournals) { this.safety = new SafetyGate(inbox.path); }
   private apply(command: Command) {
     const action = command.action;

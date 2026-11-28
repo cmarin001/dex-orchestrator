@@ -9,7 +9,7 @@ import { marketMarkSchema } from "../market-data/contract.js";
 import { dexScreenerMarks } from "../market-data/dexscreener.js";
 import { reconA } from "../agents/recon-a.js";
 import { reconB } from "../agents/recon-b.js";
-import type { ReconCache } from "../cache/recon-cache.js";
+import type { ReconStore } from "../cache/contract.js";
 import { reconKey } from "../cache/merge.js";
 import { failureKind, log, withLogContext } from "../logging/operational.js";
 import { discover } from "../tools/discovery.js";
@@ -21,7 +21,7 @@ const watchedIntervalMs = 300_000;
 const retryIntervalMs = 600_000;
 type Schedule = { target: Target; watched: boolean; trigger: MarketSnapshot["trigger"]; starts: number; due: number; momentumWatching?:boolean };
 
-export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cache: ReconCache, signal: AbortSignal) {
+export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cache: ReconStore, signal: AbortSignal) {
   const schedules = new Map<string, Schedule>();
   let baseline: Awaited<ReturnType<typeof discover>>["statistics"] | undefined;
   while (!signal.aborted) {

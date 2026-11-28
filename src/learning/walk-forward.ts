@@ -7,7 +7,7 @@ type Window={trainStart:number;split:number;testEnd:number};
 type Criteria={minTrades:number;maxRealizedDrawdown:number};
 
 export function walkForward(strategy:Strategy,candidates:readonly unknown[],feed:Feed,settings:Settings,
-  windows:readonly Window[],criteria:Criteria) {
+  windows:readonly Window[],criteria:Criteria,options:{pairedEntryReview?:boolean}={}) {
   if (candidates.length===0 || candidates.length>32 || windows.length===0 || windows.length>24 ||
       !Number.isSafeInteger(criteria.minTrades) || criteria.minTrades<1 ||
       !Number.isFinite(criteria.maxRealizedDrawdown) || criteria.maxRealizedDrawdown<0 || criteria.maxRealizedDrawdown>1) {
@@ -27,7 +27,13 @@ export function walkForward(strategy:Strategy,candidates:readonly unknown[],feed
     const winner=eligible[0];
     if (!winner) return {window,selectedCandidate:null,training:null,holdout:null};
     const holdout=feed.filter(row=>row.current.at>=split && row.current.at<testEnd);
-    return {window,selectedCandidate:winner.index,training:winner.summary,
-      holdout:replayStrategy(strategy,candidates[winner.index],holdout,settings)};
+    const params=candidates[winner.index];
+    const baseline=replayStrategy(strategy,params,holdout,settings);
+    if (!options.pairedEntryReview) return {window,selectedCandidate:winner.index,training:winner.summary,holdout:baseline};
+    const reviewed=replayStrategy(strategy,params,holdout,settings,{requireEntryReview:true});
+    return {window,selectedCandidate:winner.index,training:winner.summary,holdout:baseline,pairedEntryReview:{
+      reviewed,deltaNetCents:reviewed.performance.netCents-baseline.performance.netCents,
+      deltaDrawdown:reviewed.performance.maxRealizedDrawdown-baseline.performance.maxRealizedDrawdown,
+    }};
   });
 }

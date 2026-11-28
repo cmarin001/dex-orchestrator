@@ -18,7 +18,7 @@ import { failureKind, log, withLogContext } from "../logging/operational.js";
 import { CandidateError, SystemError } from "../orchestrator/errors.js";
 import type { Equity } from "../state/equity.js";
 import type { Positions } from "../state/positions.js";
-import type { LiveExecution } from "../wallet/live.js";
+import type { ExecutionPort } from "../execution/port.js";
 import type { ModeRuntime } from "../mode/runtime.js";
 import { marketMarkSchema, type MarketMarkProvider } from "../market-data/contract.js";
 import { dexScreenerMarks } from "../market-data/dexscreener.js";
@@ -26,7 +26,7 @@ import { activeTarget, canExit, stopLossTriggered } from "./policy.js";
 import { paperProceeds } from "../domain/paper-costs.js";
 import { localAgent } from "../mode/local-agent.js";
 
-export async function watchPositions(positions: Positions, equity: Equity, audit: Audit, signal: AbortSignal, _call: CallAgent, refreshMs = 5000, requestedExits = new Set<string>(), live?: LiveExecution, liveSlippage?: () => Promise<number>, mode?:ModeRuntime, flattenRequested: () => boolean = () => false, discretionaryExitsPaused: () => boolean = () => false, marks:MarketMarkProvider=dexScreenerMarks, momentum?:MomentumPositions, jev?:JevExitRequests) {
+export async function watchPositions(positions: Positions, equity: Equity, audit: Audit, signal: AbortSignal, _call: CallAgent, refreshMs = 5000, requestedExits = new Set<string>(), live?: ExecutionPort, liveSlippage?: () => Promise<number>, mode?:ModeRuntime, flattenRequested: () => boolean = () => false, discretionaryExitsPaused: () => boolean = () => false, marks:MarketMarkProvider=dexScreenerMarks, momentum?:MomentumPositions, jev?:JevExitRequests) {
   log("info", "watcher.started");
   const targets = new Map<string, number>();
   while (!signal.aborted) {

@@ -77,7 +77,6 @@ export function advanceMomentum(position:Position, previous:MonitorState, eviden
 
 export class MomentumPositions {
   private readonly states=new Map<string,MonitorState>();
-  private readonly committing=new Set<string>();
   private readonly cooldowns=new Map<string,number>();
 
   constructor(journal:readonly JournalEvent[], readonly evidence:StrategyEvidence) {
@@ -94,13 +93,6 @@ export class MomentumPositions {
   cooling(target:Target, at:number) {
     for (const [key,until] of this.cooldowns) if (until<=at) this.cooldowns.delete(key);
     return (this.cooldowns.get(reconKey(target)) ?? 0)>at;
-  }
-
-  reserveEntry(target:Target) {
-    const key=reconKey(target);
-    if (this.committing.has(key)) return undefined;
-    this.committing.add(key);
-    return ()=>this.committing.delete(key);
   }
 
   async check(position:Position, at:number, forced:boolean,audit:Audit,allowDiscretionary=true) {

@@ -2,7 +2,9 @@ import type { Target } from "../../schemas/common.js";
 import type { ReconSnapshot } from "../../schemas/recon-snapshot.js";
 import { NEW_TTL_MS, WATCHED_TTL_MS, merge, reconKey, targetKey } from "./merge.js";
 
-export class ReconCache {
+import type { ReconStore } from "./contract.js";
+
+export class ReconCache implements ReconStore {
   private readonly entries = new Map<string, { target: Target; watched: boolean; snapshot?: ReconSnapshot }>();
   private readonly rejected = new Set<string>();
 

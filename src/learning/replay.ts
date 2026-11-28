@@ -1,3 +1,4 @@
+import { recordedEntryReviewSchema, type RecordedEntryReview } from "./recorded-entry-review.js";
 import { earlyMomentumId, earlyMomentumParams } from "../../schemas/early-momentum.js";
 import { defaultRisk } from "../../schemas/risk-config.js";
 import type { Position } from "../state/positions.js";
@@ -15,11 +16,11 @@ type Settings={
   minLiquidityUsd:number;
   costs:PaperCosts;
 };
-export type ReplayPoint=Pick<StrategyContext,"chain"|"token"|"assetClass"|"rugPassed"|"current"|"earlyMomentum"|"sellSimulation"> & {pair?:string};
+export type ReplayPoint=Pick<StrategyContext,"chain"|"token"|"assetClass"|"rugPassed"|"current"|"earlyMomentum"|"sellSimulation"> & {pair?:string; entryReview?:RecordedEntryReview};
 type Open={entry:number;cost:number;at:number;target:number;stop:number;timeout:number; managed?:{position:Position;state:MonitorState}};
 
 /** Each signal may fill at the next observation only. All histories are scoped to the current asset and time. */
-export function replayStrategy(strategy:Strategy,params:unknown,feed:readonly ReplayPoint[],settings:Settings) {
+export function replayStrategy(strategy:Strategy,params:unknown,feed:readonly ReplayPoint[],settings:Settings,options:{requireEntryReview?:boolean}={}) {
   if (![settings.startingCents,settings.notionalCents,settings.maxCommittedCents].every(v=>Number.isSafeInteger(v)&&v>0) ||
       !Number.isFinite(settings.minLiquidityUsd) || settings.minLiquidityUsd<=0) throw new RangeError("Invalid replay settings");
   const open=new Map<string,Open>();
@@ -29,7 +30,10 @@ export function replayStrategy(strategy:Strategy,params:unknown,feed:readonly Re
   let fillCount=0;
   let attemptsWithoutRoute=0;
   const history=new Map<string,ReplayPoint["current"][]>();
-  const pending=new Map<string,NonNullable<ReturnType<Strategy["evaluate"]>>>();
+  const pending=new Map<string,{proposal:NonNullable<ReturnType<Strategy["evaluate"]>>;observedAt:number;
+    pair?:string;review?:RecordedEntryReview}>();
+  const consumedReviews=new Set<string>();
+  const reviewCounts={approved:0,declined:0,unavailable:0};
   let committed=0,capital=settings.startingCents,previousAt=-Infinity,failedEntries=0;
   const configuration=strategy.params.parse(params);
   for (const point of feed) {
@@ -76,8 +80,22 @@ export function replayStrategy(strategy:Strategy,params:unknown,feed:readonly Re
       pending.delete(key);
       const capacity=Math.min(capital,settings.maxCommittedCents)-committed;
       const cost=settings.notionalCents;
-      const permitted=!open.has(key) && liquid && point.rugPassed===true && point.sellSimulation!==false && capacity>0;
-      const {targetProfitBps,stopLossBps,timeoutSec}=previous.proposed;
+      let reviewAllowed=true;
+      if (options.requireEntryReview) {
+        const review=previous.review;
+        if (!review || consumedReviews.has(review.id) || previous.pair!==point.pair || review.availableAt<previous.observedAt ||
+            review.availableAt>current.at || review.expiresAt<=current.at) {
+          reviewCounts.unavailable++;
+          reviewAllowed=false;
+        } else {
+          consumedReviews.add(review.id);
+          reviewAllowed=review.decision==="buy";
+          if (reviewAllowed) reviewCounts.approved++;
+          else reviewCounts.declined++;
+        }
+      }
+      const permitted=reviewAllowed && !open.has(key) && liquid && point.rugPassed===true && point.sellSimulation!==false && capacity>0;
+      const {targetProfitBps,stopLossBps,timeoutSec}=previous.proposal.proposed;
       const base={at:current.at,target:targetProfitBps/10_000,stop:stopLossBps/10_000,timeout:timeoutSec*1000};
       let fill:Open|undefined;
       if (emrs && permitted && chain!=="bitcoin" && point.earlyMomentum && point.sellSimulation===true) {
@@ -108,11 +126,14 @@ export function replayStrategy(strategy:Strategy,params:unknown,feed:readonly Re
         .filter(c=>c.openAt+60_000<=evidence.observedAt).sort((a,b)=>a.openAt-b.openAt)
         .map(c=>({open:c.open,close:c.close,interval:1,volume:c.volumeUsd})) : undefined;
       const decision=strategy.evaluate({...point,asOf:current.at,candles,history:observations},configuration);
-      if (decision?.side==="buy" && decision.chain===chain && decision.token===token) pending.set(key,decision);
+      if (decision?.side==="buy" && decision.chain===chain && decision.token===token) {
+        const review=options.requireEntryReview ? recordedEntryReviewSchema.safeParse(point.entryReview).data : undefined;
+        pending.set(key,{proposal:decision,observedAt:current.at,pair:point.pair,review});
+      }
     }
     history.set(key,[...observations.filter(row=>row.at>=current.at-25*3_600_000),current].slice(-1500));
   }
   return {strategy:strategy.id,version:strategy.version,failedEntries,fillCount,exitTriggersWithoutRoute:attemptsWithoutRoute,
     executionSuccessRate:fillCount+failedEntries ? fillCount/(fillCount+failedEntries) : null,openPositions:open.size,
-    pendingEntries:pending.size,committedCents:committed,performance:performanceSummary(stats,settings.startingCents)};
+    pendingEntries:pending.size,...(options.requireEntryReview?{entryReviews:reviewCounts}:{}),committedCents:committed,performance:performanceSummary(stats,settings.startingCents)};
 }

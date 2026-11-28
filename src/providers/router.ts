@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { log } from "../logging/operational.js";
 import type { ProviderPolicy } from "../../schemas/provider-config.js";
 import type { BudgetConfig } from "../../schemas/budget.js";
@@ -7,7 +8,7 @@ import { AllProvidersDownError, BudgetExhaustedError, ProviderError } from "./ty
 
 type Observation={provider:string;ok:boolean;latencyMs:number;stage:string;
   runId?:string;configurationVersion?:string;model?:string;failure?:string;
-  inputTokens?:number;outputTokens?:number;cachedInputTokens?:number;estimatedCostUsd?:number;costUsd?:number};
+  inputTokens?:number;outputTokens?:number;cachedInputTokens?:number;estimatedCostUsd?:number;costUsd?:number;attempt?:number};
 
 export class Router {
   private readonly unreliable=new Map<string,number>();
@@ -32,6 +33,7 @@ export class Router {
     let budgetBlocked=0;
     for (const provider of available) {
       let streamed=false;
+      let attempt=0;
       let metadata:Pick<Observation,"runId"|"configurationVersion"|"model">={model:provider.modelId};
       try {
         return await use(async req=>{
@@ -44,21 +46,34 @@ export class Router {
           this.inFlight++;
           try {
             const estimatedCostUsd=provider.estimateCost(selected);
-            const reserve=await this.budget.reserve(provider.id,estimatedCostUsd,budgetConfig);
-            if (!reserve) throw new BudgetExhaustedError();
-            const res=await provider.complete(selected);
-            let metrics:Pick<Observation,"inputTokens"|"outputTokens"|"cachedInputTokens"|"costUsd">={};
-            if (res.usage) {
-              const {input,output,cached}=res.usage;
-              const c=provider.capabilities;
-              const costUsd=((input-Math.min(cached,input)*c.cacheDiscount)*c.costPerMTokIn+output*c.costPerMTokOut)/1e6;
-              await reserve(costUsd);
-              metrics={inputTokens:input,outputTokens:output,cachedInputTokens:cached,costUsd};
+            for (attempt=1;;attempt++) {
+              if (req.signal?.aborted) throw new ProviderError("cancelled");
+              const reserve=await this.budget.reserve(provider.id,estimatedCostUsd,budgetConfig);
+              if (!reserve) throw new BudgetExhaustedError();
+              let res:CompletionResponse;
+              try { res=await provider.complete(selected); }
+              catch (error) {
+                if (streamed || req.signal?.aborted || !(error instanceof ProviderError) ||
+                    !["error","timeout"].includes(error.kind) || attempt>(policy.retryLimit ?? 0)) throw error;
+                const delay=100*2**(attempt-1)+Math.floor(Math.random()*100);
+                log("warn","provider.retry",{stage,provider:provider.id,reason:error.kind,attempt});
+                try { await sleep(delay,undefined,{signal:req.signal}); }
+                catch { throw new ProviderError("cancelled"); }
+                continue;
+              }
+              let metrics:Pick<Observation,"inputTokens"|"outputTokens"|"cachedInputTokens"|"costUsd">={};
+              if (res.usage) {
+                const {input,output,cached}=res.usage;
+                const c=provider.capabilities;
+                const costUsd=((input-Math.min(cached,input)*c.cacheDiscount)*c.costPerMTokIn+output*c.costPerMTokOut)/1e6;
+                await reserve(costUsd);
+                metrics={inputTokens:input,outputTokens:output,cachedInputTokens:cached,costUsd};
+              }
+              if (this.observe) {
+                await this.observe({provider:provider.id,stage,...metadata,...await provider.health(),estimatedCostUsd,attempt,...metrics});
+              }
+              return res;
             }
-            if (this.observe) {
-              await this.observe({provider:provider.id,stage,...metadata,...await provider.health(),estimatedCostUsd,...metrics});
-            }
-            return res;
           } finally { this.inFlight--; }
         });
       } catch (error) {
@@ -73,7 +88,7 @@ export class Router {
           const cooldown=Math.max(policy.healthCheckIntervalSec*1000,error.retryAfterMs ?? 0);
           this.unreliable.set(provider.id,this.now()+cooldown);
         }
-        if (this.observe) await this.observe({provider:provider.id,stage,...metadata,ok:false,latencyMs:(await provider.health()).latencyMs,failure:kind});
+        if (this.observe) await this.observe({provider:provider.id,stage,...metadata,ok:false,latencyMs:(await provider.health()).latencyMs,failure:kind,attempt});
         log("warn","provider.fallback",{stage,provider:provider.id,reason:error.kind});
       }
     }

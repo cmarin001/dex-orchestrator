@@ -6,7 +6,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { ProviderError } from "../providers/types.js";
 import type { MarketMarkProvider } from "../market-data/contract.js";
 import type { Target } from "../../schemas/common.js";
-import type { ReconCache } from "../cache/recon-cache.js";
+import type { ReconStore } from "../cache/contract.js";
 import { elapsed, failureKind, log, startTimer, withLogContext } from "../logging/operational.js";
 import { CandidateError, SystemError } from "./errors.js";
 import type { DiscoveryScope } from "../tools/discovery.js";
@@ -30,7 +30,7 @@ export async function runLoop(
   options: LoopOptions,
   pipeline: Pipeline,
   signal: AbortSignal,
-  cache: ReconCache,
+  cache: ReconStore,
   controls?: WorkerControls,
 ): Promise<void> {
   const seen = new Map<string, number>();
@@ -47,7 +47,7 @@ export async function runLoop(
     await pipeline.live?.reconcile();
     const targets = cache.list().filter(target=>!pipeline.mode || pipeline.mode.chain.enabledChains.includes(target.chain));
     const run_id = randomUUID();
-    const snapshots = new Map<string, ReturnType<ReconCache["read"]>>();
+    const snapshots = new Map<string, ReturnType<ReconStore["read"]>>();
     for (const target of targets) {
       const identity = { ...target, run_id };
       try {

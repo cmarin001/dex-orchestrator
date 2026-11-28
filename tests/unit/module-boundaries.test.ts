@@ -26,7 +26,7 @@ test("domain and typed contracts are independent of application and infrastructu
 
 test("intelligence and offline learning have no dependency path to signing, execution or control-plane writes",()=>{
   const roots=["src/agent-runtime","src/decisions","src/learning","src/providers"];
-  const forbidden=/^src\/(wallet|exec|control|dashboard-api|mcp)\//;
+  const forbidden=/^src\/(wallet|exec|execution|control|dashboard-api|mcp)\//;
   const visited=new Set<string>();
   function visit(path:string,stack:string[]) {
     assert.ok(!forbidden.test(path),[...stack,path].join(" -> "));
@@ -39,4 +39,13 @@ test("intelligence and offline learning have no dependency path to signing, exec
     visited.add(path);
   }
   for (const root of roots) for (const path of files(root)) visit(path,[]);
+});
+
+test("trade orchestration consumes execution and recon ports without importing concrete adapters",()=>{
+  for (const path of ["src/orchestrator/pipeline.ts","src/orchestrator/loop.ts","src/orchestrator/recon-refresh.ts","src/exits/watcher.ts","src/control/worker.ts","src/execution/port.ts","src/cache/contract.ts"]) {
+    for (const specifier of imports(path).filter(value=>value.startsWith("."))) {
+      const target=local(path,specifier);
+      assert.doesNotMatch(target,/^src\/(wallet|cache\/recon-cache\.ts)/,path);
+    }
+  }
 });

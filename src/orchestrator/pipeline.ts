@@ -21,7 +21,7 @@ import type { Audit } from "../logging/logger.js";
 import { sizePosition } from "../state/equity.js";
 import type { Equity } from "../state/equity.js";
 import type { Positions } from "../state/positions.js";
-import type { LiveExecution } from "../wallet/live.js";
+import type { ExecutionPort } from "../execution/port.js";
 import type { deploymentGate } from "./deployment.js";
 import type { ModeRuntime } from "../mode/runtime.js";
 import { failureKind, log } from "../logging/operational.js";
@@ -44,7 +44,8 @@ export interface Pipeline {
   riskConfig?: () => Promise<RiskConfig>;
   rejectRecon?: (target: Merged["identity"]) => void;
   exitMode?: "profit_only" | "stop_loss";
-  live?: LiveExecution;
+  live?: ExecutionPort;
+  riskSnapshot?: () => Promise<{config:RiskConfig;revision:string}>;
   mode?: ModeRuntime;
   deployment?: ReturnType<typeof deploymentGate>;
   entriesBlocked?: () => boolean;
@@ -129,7 +130,8 @@ export async function runCandidate(input: Merged, dependencies: Pipeline, ranked
     if (dependencies.momentumPositions.cooling(identity,now())) return skip("early_momentum_cooldown");
     if (positions.list().some(position=>reconKey(position)===reconKey(identity))) return skip("early_momentum_token_already_open");
   }
-  const config = await dependencies.riskConfig?.() ?? defaultRisk;
+  const initialRisk=await dependencies.riskSnapshot?.();
+  const config = initialRisk?.config ?? await dependencies.riskConfig?.() ?? defaultRisk;
   if (dependencies.equityMaxAgeMs && !equity.hasFreshMarks(positions.list(), now(), dependencies.equityMaxAgeMs)) {
     return skip("equity_marks_stale");
   }
@@ -221,7 +223,8 @@ export async function runCandidate(input: Merged, dependencies: Pipeline, ranked
   if (!fresh() || signal?.aborted) return skip("expired_before_fill");
   if (dependencies.mode && strategy && !await dependencies.mode.authorize(input,strategy)) return skip("awaiting_strategy_or_approval");
 
-  const latest = await dependencies.riskConfig?.() ?? config;
+  const latestRisk=await dependencies.riskSnapshot?.();
+  const latest = latestRisk?.config ?? await dependencies.riskConfig?.() ?? config;
   if (input.expected_slippage_bps > latest.max_slippage_bps) return skip("entry_slippage_limit_changed");
   if (!equity.hasFreshMarks(positions.list(), now(), dependencies.equityMaxAgeMs ?? 60_000)) {
     return skip("equity_marks_stale");
@@ -256,12 +259,18 @@ export async function runCandidate(input: Merged, dependencies: Pipeline, ranked
     ...(dependencies.exitMode || dependencies.mode ? { exit_policy: { ...exit_policy, entry_at: fillAt } } : {}) };
   let outcome: "live_fill" | "paper_fill" | "skipped";
   if (dependencies.live) {
+    const authorization=latestRisk && dependencies.riskSnapshot ? {
+      revision:latestRisk.revision,
+      current:async()=> (await dependencies.riskSnapshot!()).revision===latestRisk.revision &&
+        !signal?.aborted && !dependencies.entriesBlocked?.() && !dependencies.deployment?.paused() &&
+        (jevDeadline===undefined || (now()<jevDeadline && dependencies.mode?.allowsJevTrading()===true)),
+    } : undefined;
     const confirmed = await dependencies.live.enter(identity,costCents,quote.value,
-      Math.min(latest.max_slippage_bps,config.max_slippage_bps),exit_policy,Math.min(expires_at!,jevDeadline ?? Infinity),strategy?.signal?.strategyId);
+      Math.min(latest.max_slippage_bps,config.max_slippage_bps),exit_policy,Math.min(expires_at!,jevDeadline ?? Infinity),strategy?.signal?.strategyId,authorization);
     outcome = confirmed ? "live_fill" : await skip("live_entry_unconfirmed");
   } else {
-    const release=offer ? dependencies.momentumPositions?.reserveEntry(identity) : undefined;
-    if (offer && !release) return skip("early_momentum_entry_in_progress");
+    const release=positions.beginPaperEntry();
+    if (!release) return skip("paper_entry_in_progress");
     try {
       await audit({ identity, stage: "executor", status: "paper_fill", gaps: [], position,
         ...(offer ? {detail:{version:1,strategyId:earlyMomentumId,state:"POSITION_OPEN",offer,...(reviewId?{decision_id:reviewId}:{})}} : costs || reviewId ? {detail:{reference_price_usd:quote.value, reference_at:quote.fetched_at,...(reviewId?{decision_id:reviewId}:{})}} : {}) });
@@ -269,7 +278,7 @@ export async function runCandidate(input: Merged, dependencies: Pipeline, ranked
       log("info", "position.opened", { ...fields, outcome: "paper_fill" });
       if (offer) equity.markValue(position,liquidationValue(offer.sell),fillAt);
       else equity.mark(position, quote.value, quote.fetched_at);
-    } finally { release?.(); }
+    } finally { release(); }
     outcome = "paper_fill";
   }
 

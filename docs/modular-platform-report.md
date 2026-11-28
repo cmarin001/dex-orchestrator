@@ -1,5 +1,7 @@
 # Modular platform engineering report
 
+This report records the initial modular platform implementation. See the [continuation report](modular-platform-continuation.md) for the later feature-branch baseline, changes and verification.
+
 The starting point was a fresh clone of `main` at `13b93732889d067d3853689c8e9872f937fa47b1`, the merge of PR #27. The working tree was clean, and the target checkout contained no `AGENTS.md` files. The implementation is on `architecture/modular-intelligence`. No other worktrees were edited. The historical baseline was measured on Node v24.22.3 after a lockfile install.
 
 ## Discovery and gap analysis
