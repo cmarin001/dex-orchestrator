@@ -1,6 +1,11 @@
+import { JevExitRequests } from "./decisions/exit-requests.js";
+import { earlyMomentumId } from "../schemas/early-momentum.js";
+import { managedPolicy, MomentumPositions } from "./strategies/early-momentum/monitor.js";
+import { dexScreenerMarks } from "./market-data/dexscreener.js";
+import { configuredEntryGate, configuredShadow, configuredJevPaperEntry, configuredJevTrading } from "./decisions/composition.js";
+import { paperCostsSchema } from "./domain/paper-costs.js";
 import { isFill, isClose } from "./logging/types.js";
 import { chartPointSchema } from "../schemas/live-view.js";
-import { defaultRisk } from "../schemas/risk-config.js";
 import { normalizeAddress, targetSchema } from "../schemas/common.js";
 import { readFile, mkdir, open, unlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -16,14 +21,14 @@ import { Equity } from "./state/equity.js";
 import { Positions } from "./state/positions.js";
 import { watchPositions } from "./exits/watcher.js";
 
-import { readRisk, requireFreshRisk } from "./state/risk-config.js";
+import { riskSnapshot } from "./state/risk-config.js";
 import { rugCheckSchema } from "../schemas/rug-check.js";
 import { scopeSchema } from "./tools/discovery.js";
 import { Inbox } from "./control/commands.js";
 import { WorkerControls } from "./control/worker.js";
 import { configuredWallet } from "./wallet/config.js";
 import { Budget } from "./providers/budget.js";
-import { OpenAICompatProvider } from "./providers/adapter.js";
+import { reasoningProviders } from "./providers/composition.js";
 import { Router } from "./providers/router.js";
 import { providerAgent } from "./providers/agent.js";
 import { initialSettings } from "./mode/config.js";
@@ -63,6 +68,7 @@ async function main(): Promise<void> {
   log("info", "worker.starting");
   const env = config.parse(process.env);
   const mode = z.enum(["paper","live"]).default("paper").parse(process.env.EXECUTION_MODE);
+  if (mode === "live" && process.env.JEV_PAPER_ENTRY) throw new Error("JEV_PAPER_ENTRY_REQUIRES_PAPER_MODE");
   if (mode === "live" && env.AUDIT_PATH === "data/audit.jsonl") throw new Error("LIVE_AUDIT_PATH_REQUIRED");
   if (mode === "paper") return run(env, mode);
   await mkdir(dirname(env.AUDIT_PATH), { recursive:true,mode:0o700 });
@@ -78,9 +84,15 @@ async function main(): Promise<void> {
 }
 
 async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void> {
-  const wallet = mode === "live" ? await configuredWallet(process.env) : undefined;
+  if (mode==="live" && process.env.PAPER_COSTS) throw new Error("PAPER_COSTS_REQUIRES_PAPER_MODE");
+  const paperCosts=process.env.PAPER_COSTS ? paperCostsSchema.parse(JSON.parse(process.env.PAPER_COSTS)) : undefined;
+
   const journal = await readJournal(env.AUDIT_PATH);
   const audit = fileAudit(env.AUDIT_PATH);
+  const trading=await configuredJevTrading(process.env,mode,env.AUDIT_PATH,audit);
+  const review=await configuredJevPaperEntry(process.env,mode,env.AUDIT_PATH,audit);
+  const entryDecision=mode==="paper" ? configuredEntryGate(process.env,audit) : undefined;
+  const wallet = mode === "live" ? await configuredWallet(process.env) : undefined;
   const address = await wallet?.adapter.address();
   const previousMode = journal.find(event => event.stage === "execution_mode");
   const execution = {mode,chain:wallet?.config.chain ?? null,address:address ?? null};
@@ -129,14 +141,24 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
       cache.reject(identity);
     } else if (isFill(event.status) && position) {
       positions.record(position);
-      equity.mark(position, position.entry_price_usd, Date.parse(event.at));
+      const reference=z.object({reference_price_usd:z.number().positive(),reference_at:z.number().int()}).safeParse(event.detail);
+      const momentumPolicy=managedPolicy(position.exit_policy);
+      if (momentumPolicy) equity.markValue(position,momentumPolicy.initialProceedsCents,position.exit_policy!.entry_at);
+      else if (position.paper_costs && reference.success) equity.mark(position,reference.data.reference_price_usd,reference.data.reference_at);
+      else equity.mark(position, position.entry_price_usd, Date.parse(event.at));
     } else if (isClose(event.status) && position && close) {
       positions.close(position);
       equity.close(position, close.proceeds_cents, close.exit_at);
+    } else if (event.stage === "early_momentum_monitor" && identity) {
+      const open=positions.get(identity);
+      const mark=z.object({lastProceedsCents:z.number().int().nonnegative(),lastQuoteAt:z.number().int()}).parse(event.detail);
+      if (open?.run_id===identity.run_id && managedPolicy(open.exit_policy) && mark.lastQuoteAt>=0) {
+        equity.markValue(open,mark.lastProceedsCents,mark.lastQuoteAt);
+      }
     } else if (event.stage === "position_mark" && identity) {
       const open = positions.get(identity);
       const point = chartPointSchema.safeParse(event.detail);
-      if (open && open.run_id === identity.run_id && point.success) equity.mark(open, point.data.price, point.data.t);
+      if (open && !managedPolicy(open.exit_policy) && open.run_id === identity.run_id && point.success) equity.mark(open, point.data.price, point.data.t);
     }
   }
   await audit({stage:"worker_replay",status:"ok",gaps:[],detail:{position_keys:positions.list().map(tradeKey).sort()}});
@@ -149,38 +171,49 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
   log("info", "worker.started", { count: uniqueTargets.length });
   await audit({stage:"worker_lifecycle",status:"ok",gaps:[],detail:"running"});
   const options = {
-    targets: uniqueTargets, discovery, intervalMs: env.LOOP_INTERVAL_MS,
+    targets: uniqueTargets, discovery, marks:dexScreenerMarks, intervalMs: env.LOOP_INTERVAL_MS,
     breakerFailures: env.BREAKER_FAILURES, breakerCooldownMs: env.BREAKER_COOLDOWN_MS,
     goPlusAccessToken: await secretText(process.env,"GOPLUS_ACCESS_TOKEN"),
     etherscanApiKey: await secretText(process.env,"ETHERSCAN_API_KEY"),
     social:{x:await secretText(process.env,"X_BEARER_TOKEN"),reddit:await secretText(process.env,"REDDIT_ACCESS_TOKEN"),
       subreddit:process.env.REDDIT_SUBREDDIT},
   };
-  const configured=await Promise.all(Object.entries(settings.definitions).map(async ([id,definition])=>{
-    const key=definition.apiKeyEnv ? await secretText(process.env,definition.apiKeyEnv) : undefined;
-    return definition.apiKeyEnv && !key ? null : [id,new OpenAICompatProvider(id,definition,key)] as const;
-  }));
-  const providers=new Map(configured.filter(row=>row!==null));
+  const providers=await reasoningProviders(settings,process.env);
   const router=new Router(providers,budget,Date.now,async detail=>{
     await audit({stage:"model_provider",status:detail.ok?"ok":"failed",gaps:[],detail});
   });
   const runtime=new ModeRuntime(plane,providerAgent(router,()=>settings,abort.signal),new StrategyEvidence(process.env.STRATEGY_EVIDENCE_PATH || undefined));
+  const shadow=mode==="paper" ? await configuredShadow(process.env,env.AUDIT_PATH,abort.signal) : undefined;
+  const momentumPositions=new MomentumPositions(journal,new StrategyEvidence(process.env.STRATEGY_EVIDENCE_PATH || undefined));
+  const readRiskSnapshot=()=>riskSnapshot(env.RISK_CONFIG_PATH,env.REQUIRE_RISK_CONFIG==="true",env.MAX_RISK_CONFIG_AGE_SEC*1000);
   const pipeline = {
-    call: runtime.call, mode:runtime, audit, live, deployment,
+    call: runtime.call, mode:runtime, audit, live, deployment, paperCosts, entryDecision, executionMode:mode, momentumPositions,
+    jevBuy:trading?.buy,
+    paperEntryReview:review ? (entry:Parameters<typeof review>[0],signal?:AbortSignal)=>
+      runtime.usesTypedDecisions() ? review(entry,signal) : Promise.resolve(undefined) : undefined,
+    shadowCandidate:shadow ? (snapshot: Parameters<typeof shadow.observe>[0],outcome: Parameters<typeof shadow.observe>[1]) => {
+      if (!runtime.usesTypedDecisions()) return;
+      if (shadow.scope==="early_momentum") {
+        if (!runtime.momentumConfig()) return;
+        const position=positions.get(snapshot.identity);
+        const selected=position?.run_id===snapshot.identity.run_id && position.strategy_id===earlyMomentumId;
+        shadow.observe(snapshot,outcome==="filled" && !selected ? "skipped" : outcome,runtime.momentumEvidence(snapshot.identity));
+      } else shadow.observe(snapshot,outcome);
+    } : undefined,
     entriesBlocked: () => controls.paused,
     exitMode: env.PAPER_EXIT_MODE,
     equityMaxAgeMs: env.MAX_EQUITY_AGE_SEC * 1000,
-    riskConfig: async () => {
-      const revision = await readRisk(env.RISK_CONFIG_PATH);
-      return revision || env.REQUIRE_RISK_CONFIG === "true"
-        ? requireFreshRisk(revision, Date.now(), env.MAX_RISK_CONFIG_AGE_SEC * 1000) : defaultRisk;
-    },
+    riskConfig:async()=> (await readRiskSnapshot()).config,
+    riskSnapshot:live ? readRiskSnapshot : undefined,
     equity, positions, maxPositionBps: env.MAX_POSITION_BPS, maxOpenPositions: env.MAX_OPEN_POSITIONS,
   };
-  const watcher = watchPositions(positions, equity, audit, abort.signal, pipeline.call, env.MARK_REFRESH_MS, controls.exits, live, async () => (await pipeline.riskConfig()).max_slippage_bps, runtime, () => controls.safety.flattenRequested(), () => controls.exitsPaused).finally(() => abort.abort());
+  const sellRequests=trading ? new JevExitRequests(trading.sell,
+    ()=>runtime.allowsJevTrading() && !deployment.paused() && (!live || live.enabled())) : undefined;
+  const watcher = watchPositions(positions, equity, audit, abort.signal, pipeline.call, env.MARK_REFRESH_MS, controls.exits, live, async () => (await pipeline.riskConfig()).max_slippage_bps, runtime, () => controls.safety.flattenRequested(), () => controls.exitsPaused,options.marks,momentumPositions,sellRequests).finally(() => abort.abort());
   const refresh = refreshRecon(options, pipeline, cache, abort.signal).finally(() => abort.abort());
   const loop = runLoop(options, pipeline, abort.signal, cache, controls).finally(() => abort.abort());
   const results = await Promise.allSettled([loop, refresh, watcher]);
+  await shadow?.settled();
   await audit({stage:"worker_lifecycle",status:"ok",gaps:[],detail:"stopped"});
   for (const result of results) if (result.status === "rejected") throw result.reason;
   log("info", "worker.stopped");

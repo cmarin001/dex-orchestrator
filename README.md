@@ -17,7 +17,7 @@ Set a nonempty `WATCHLIST` or enable discovery in `.env`. The default strategy m
 
 Amounts and position limits use integer USD cents and basis points. Paper fills use an observed USD price and omit fees, slippage, routing, and settlement. The fixtures contain recorded public provider responses. Tests use those recordings, synthetic candidates, and mocked OpenAI calls. Optional AI and hybrid modes use the configured Chat Completions providers with schema validation.
 
-[Prompt conformance and verification](docs/conformance.md) · [Architecture](docs/architecture.md) · [Schemas](docs/schemas.md) · [Runtime ADR](docs/adr/0001-runtime.md)
+[Prompt conformance and verification](docs/conformance.md) · [Architecture](docs/architecture.md) · [Modular platform and integration guide](docs/modular-platform.md) · [Schemas](docs/schemas.md) · [Runtime ADR](docs/adr/0001-runtime.md)
 
 ## VPS deployment and MCP
 

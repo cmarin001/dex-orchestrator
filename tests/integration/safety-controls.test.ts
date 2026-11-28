@@ -124,3 +124,22 @@ test("flatten requests exits under reduce-only, while typed signer disarm reject
   await assert.rejects(f.signer.signAndSend({ ...intent, reduce_only: true }), { message: "SIGNER_DISARMED" });
   assert.deepEqual(f.trace, []);
 });
+
+test("deployment pause during the durable signed write prevents broadcast",async()=>{
+  const {journal,audit}=walletFixture();
+  let deploymentOpen=true, broadcasts=0;
+  const adapter:ChainAdapter={
+    chain:"base",address:async()=>"wallet",
+    prepare:async()=>({simulation:{ok:true,max_fee_native:"1"},
+      sign:async()=>({id:"prepared-id",bytes:Uint8Array.of(1)})}),
+    async broadcast(){broadcasts++; return "prepared-id";},
+    receipt:async()=>({chain:"base",status:"pending",tx_hash:"prepared-id"}),
+  };
+  const signer=createSigner(adapter,caps,async event=>{
+    await audit(event);
+    if ((event.detail as {event?:string} | undefined)?.event==="signed") deploymentOpen=false;
+  },journal,noWait);
+  await assert.rejects(signer.signAndSend(intent,()=>deploymentOpen),/DEPLOYMENT_PAUSED/);
+  assert.equal(broadcasts,0);
+  assert.equal(await createSigner(adapter,caps,audit,journal,noWait).reconcile(intent),null);
+});

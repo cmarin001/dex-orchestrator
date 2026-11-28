@@ -1,3 +1,4 @@
+import { managedMomentumSchema } from "./early-momentum.js";
 import { z } from "zod";
 
 export const timeoutRungSchema = z.strictObject({
@@ -25,6 +26,6 @@ const common = {
 };
 export const exitPolicySchema = z.discriminatedUnion("mode", [
   z.strictObject({ ...common, mode: z.literal("profit_only") }),
-  z.strictObject({ ...common, mode: z.literal("stop_loss"), stop_loss_bps: z.number().int().min(1).max(10_000) }),
+  z.strictObject({ ...common, mode: z.literal("stop_loss"), early_momentum: managedMomentumSchema.optional(), stop_loss_bps: z.number().int().min(1).max(10_000) }),
 ]);
 export type ExitPolicy = z.infer<typeof exitPolicySchema>;

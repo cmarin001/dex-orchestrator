@@ -1,17 +1,19 @@
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
+import { earlyMomentumEvidenceSchema } from "../../schemas/early-momentum.js";
 import { targetSchema } from "../../schemas/common.js";
 import { targetKey } from "../cache/merge.js";
 
-const supplement=z.strictObject({
+export const strategyEvidenceSchema=z.strictObject({
   target:targetSchema, source:z.string().min(1), fetched_at:z.number().int(),
   candles:z.array(z.strictObject({interval:z.union([z.literal(1),z.literal(5)]),open:z.number().positive(),
     close:z.number().positive(),volume:z.number().nonnegative(),at:z.number().int()})).max(1500).optional(),
+  early_momentum:earlyMomentumEvidenceSchema.optional(),
   wallet_buys:z.array(z.string()).max(1000).optional(),
   btc_price:z.number().positive().optional(), whale_net:z.number().optional(), gas_usd:z.number().nonnegative().optional(),
   launchpad:z.string().min(1).optional(), sell_simulation:z.boolean().optional(),
 });
-type Evidence=z.infer<typeof supplement>;
+type Evidence=z.infer<typeof strategyEvidenceSchema>;
 
 export class StrategyEvidence {
   private rows=new Map<string,Evidence>();
@@ -25,7 +27,7 @@ export class StrategyEvidence {
     });
     if (text && !text.endsWith("\n")) return;
     for (const line of text.split("\n").filter(Boolean)) {
-      const row=supplement.parse(JSON.parse(line));
+      const row=strategyEvidenceSchema.parse(JSON.parse(line));
       if (row.fetched_at>now || row.fetched_at+60_000<=now) continue;
       const key=targetKey(row.target);
       if ((next.get(key)?.fetched_at ?? -Infinity)<=row.fetched_at) next.set(key,row);

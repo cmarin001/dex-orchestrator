@@ -23,4 +23,7 @@ import strategy21 from "./builtin/kelly-fraction.js";
 import strategy22 from "./builtin/time-of-day.js";
 import strategy23 from "./builtin/copy-trade.js";
 
-export const builtins = [strategy0, strategy1, strategy2, strategy3, strategy4, strategy5, strategy6, strategy7, strategy8, strategy9, strategy10, strategy11, strategy12, strategy13, strategy14, strategy15, strategy16, strategy17, strategy18, strategy19, strategy20, strategy21, strategy22, strategy23];
+import type { Strategy } from "./strategy.js";
+import earlyMomentum from "./builtin/early-momentum-reversal.js";
+
+export const builtins: Strategy[] = [strategy0, strategy1, strategy2, strategy3, strategy4, strategy5, strategy6, strategy7, strategy8, strategy9, strategy10, strategy11, strategy12, strategy13, strategy14, strategy15, strategy16, strategy17, strategy18, strategy19, strategy20, strategy21, strategy22, strategy23, earlyMomentum];

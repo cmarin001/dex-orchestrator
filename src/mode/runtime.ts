@@ -1,3 +1,6 @@
+import { earlyMomentumId, earlyMomentumVersion, earlyMomentumParams } from "../../schemas/early-momentum.js";
+import type { Audit } from "../logging/logger.js";
+import { assessEarlyMomentum } from "../strategies/builtin/early-momentum-reversal.js";
 import type { CallAgent } from "../agents/call.js";
 import type { Merged } from "../cache/merge.js";
 import { targetKey } from "../cache/merge.js";
@@ -31,8 +34,12 @@ export class ModeRuntime {
         if (!ctx || row.skipped) continue;
         const vote=this.plane.registry.decide({...ctx,rugPassed:false},settings.strategies,
           {mode:settings.mode.strategyConsensus,weights:settings.mode.strategyWeights});
-        if (vote?.side!=="buy") continue;
-        const weight=vote.confidence*this.plane.performance(row.chain).winRate;
+        const params=this.momentumConfig();
+        const preview=params ? assessEarlyMomentum({...ctx,rugPassed:false},params) : undefined;
+        const confidence=Math.max(vote?.side==="buy" ? vote.confidence : 0,
+          preview?.reason==="rug_check_required" ? preview.score/100 : 0);
+        if (!confidence) continue;
+        const weight=confidence*this.plane.performance(row.chain).winRate;
         this.chainScore.set(row.chain,(this.chainScore.get(row.chain) ?? 0)+weight);
       }
     }
@@ -47,6 +54,8 @@ export class ModeRuntime {
       log("warn","strategy.evidence_unavailable",{failure_kind:failureKind(error)});
     });
   }
+  allowsJevTrading() { return this.active==="hybrid"; }
+  usesTypedDecisions() { return this.active==="ai" || this.active==="hybrid"; }
   usesModels() { return this.active==="ai"; }
   get chain() { return this.plane.settings.chain; }
 
@@ -88,13 +97,14 @@ export class ModeRuntime {
     this.history.set(key,[...rows.filter(row=>row.at>=entry.at-25*3_600_000),entry].slice(-1500));
     if (this.history.size>3000) this.history.delete(this.history.keys().next().value!);
   }
-  private context(identity:Handoff,holding:boolean) {
+  private context(identity:Handoff,holding:boolean,asOf=Date.now()) {
     const history=this.history.get(targetKey(identity)) ?? [];
     const current=history.at(-1);
-    const extra=this.evidence.get(targetKey(identity),Date.now());
+    const extra=this.evidence.get(targetKey(identity),asOf);
     if (!current) return undefined;
     // A close derived from rolling measurements would not be a real OHLC candle.
-    return {token:identity.token,chain:identity.chain,assetClass:"memecoin",current,history,holding,rugPassed:true,
+    return {token:identity.token,chain:identity.chain,assetClass:"memecoin",current,history,holding,rugPassed:true,asOf,
+      earlyMomentum:extra?.early_momentum ? {observedAt:extra.fetched_at,data:extra.early_momentum} : undefined,
       candles:extra?.candles?.filter(c=>c.at<=extra.fetched_at).sort((a,b)=>a.at-b.at),
       walletBuys:extra?.wallet_buys,sellSimulation:extra?.sell_simulation,performance:this.plane.performance(identity.chain)} satisfies StrategyContext;
   }
@@ -107,16 +117,59 @@ export class ModeRuntime {
     }
     return Math.max(0,Math.floor(equity.markedCapitalCents*pct)-committed);
   }
-  async approve(snapshot:Merged) {
+  momentumEvidence(identity:Handoff,at=Date.now()) {
+    const row=this.evidence.get(targetKey(identity),at);
+    return row?.early_momentum ? {observedAt:row.fetched_at,data:row.early_momentum} : undefined;
+  }
+
+  momentumConfig() {
+    const configured=this.plane.settings.strategies[earlyMomentumId];
+    return configured?.enabled && this.active!=="ai" && this.active!=="pause" ?
+      earlyMomentumParams.safeParse(configured.params ?? {}).data : undefined;
+  }
+
+  private readonly momentumDecisions = new Map<string,string>();
+
+  async rejectMomentum(snapshot:Merged,reason:string,audit:Audit,at:number) {
+    if (!this.momentumConfig()) return;
+    const evidence=this.momentumEvidence(snapshot.identity,at);
+    if (!evidence) return;
+    const key=targetKey(snapshot.identity);
+    const fingerprint=JSON.stringify(["REJECTED",reason,snapshot.quote?.fetched_at,evidence.observedAt]);
+    if (this.momentumDecisions.get(key)===fingerprint) return;
+    await audit({identity:snapshot.identity,stage:"early_momentum_candidate",status:"skipped",gaps:[reason],
+      detail:{strategyId:earlyMomentumId,version:earlyMomentumVersion,state:"REJECTED",
+        states:["DISCOVERED","REJECTED"],reason,marketAt:snapshot.quote?.fetched_at,evidenceAt:evidence.observedAt}});
+    this.rememberMomentum(key,fingerprint);
+  }
+
+  private rememberMomentum(key:string,fingerprint:string) {
+    this.momentumDecisions.set(key,fingerprint);
+    if (this.momentumDecisions.size>3000) this.momentumDecisions.delete(this.momentumDecisions.keys().next().value!);
+  }
+
+  async approve(snapshot:Merged, audit?:Audit, asOf=Date.now()) {
     const {identity,feed_entry:feed,checks_raw:checks}=snapshot;
     if (this.active==="pause" || !feed || !memecoinEligible(this.chain,identity.chain,{
       ageSec:feed.age_sec,liquidityUsd:feed.liquidity_usd,holders:checks.holder_count,top10Pct:checks.holder_top10_pct,
       launchpad:this.evidence.get(targetKey(identity),Date.now())?.launchpad,
     })) return null;
     if (this.active==="ai") return {buy:true,sizeFactor:1, signal:null};
-    const ctx=this.context(identity,false);
+    const ctx=this.context(identity,false,asOf);
     if (!ctx) return null;
     const settings=this.plane.settings;
+    const params=this.momentumConfig();
+    if (params && audit) {
+      const decision=assessEarlyMomentum(ctx,params);
+      const key=targetKey(identity);
+      const fingerprint=JSON.stringify([decision.state,decision.reason,decision.marketAt,decision.evidenceAt,params]);
+      if (this.momentumDecisions.get(key)!==fingerprint) {
+        await audit({identity,stage:"early_momentum_candidate",status:decision.state==="ENTRY_ELIGIBLE"?"ok":"skipped",
+          gaps:decision.state==="ENTRY_ELIGIBLE"?[]:[decision.reason],detail:{strategyId:earlyMomentumId,
+            version:earlyMomentumVersion,rugPassed:true,...decision}});
+        this.rememberMomentum(key,fingerprint);
+      }
+    }
     const result=this.plane.registry.decide(ctx,settings.strategies,{mode:settings.mode.strategyConsensus,weights:settings.mode.strategyWeights,
       minConfidence:settings.mode.strategyMinConfidence,onDisagreement:disagrees=>{
       const key=targetKey(identity);
@@ -124,7 +177,9 @@ export class ModeRuntime {
     }});
     if (!result || result.side!=="buy") return null;
     const {sizeFactor,...signal}=result;
-    return {buy:true,sizeFactor,signal};
+    const momentum=signal.strategyId===earlyMomentumId && params && ctx.earlyMomentum ?
+      {params,...ctx.earlyMomentum} : undefined;
+    return {buy:true,sizeFactor,signal,momentum};
   }
   async authorize(snapshot:Merged, proposal:NonNullable<Awaited<ReturnType<ModeRuntime["approve"]>>>) {
     if (this.active==="pause") return false;
@@ -137,6 +192,16 @@ export class ModeRuntime {
     if (!proposal.signal && this.active==="strategies") return false;
     return this.plane.signal(targetKey(identity),signal,proposal.sizeFactor,needsHuman,mode.humanApprovalTimeoutSec);
   }
+  async authorizeJevExit(identity:Handoff) {
+    if (!this.allowsJevTrading() || (await this.exitSignal(identity,false)).allowed===false) return false;
+    const mode=this.plane.settings.mode;
+    if (!mode.humanApprovalRequired) return true;
+    return this.plane.signal(targetKey(identity)+":jev-exit",{
+      strategyId:"jev",chain:identity.chain,token:identity.token,side:"exit",confidence:1,reason:"discretionary_exit",
+      proposed:{targetProfitBps:0,stopLossBps:0,timeoutSec:1},
+    },1,true,mode.humanApprovalTimeoutSec);
+  }
+
   async exitSignal(identity:Handoff, allowDiscretionaryExit:boolean) {
     if (this.active==="ai" || this.active==="pause") return {allowed:true,exit:false};
     const ctx=this.context(identity,true);

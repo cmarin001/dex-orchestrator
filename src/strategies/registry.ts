@@ -8,6 +8,7 @@ import type { strategySetting } from "../../schemas/strategy.js";
 import { log } from "../logging/operational.js";
 import { builtins } from "./builtins.js";
 import { aggregate } from "./aggregator.js";
+import { strategyEnabledByDefault } from "./strategy.js";
 import type { Strategy, StrategyContext } from "./strategy.js";
 import type { aggregatorSchema } from "../../schemas/strategy.js";
 
@@ -39,7 +40,7 @@ export class Registry {
     let eligible=0, buyAllowed=true, exitAllowed=true;
     for (const strategy of this.list()) {
       const setting=settings[strategy.id];
-      if (!(setting?.enabled ?? strategy.kind==="signal") || !strategy.chains.includes(ctx.chain)) continue;
+      if (!(setting?.enabled ?? strategyEnabledByDefault(strategy)) || !strategy.chains.includes(ctx.chain)) continue;
       const parsed=strategy.params.safeParse(setting?.params ?? {});
       if (!parsed.success) { log("warn","strategy.disabled",{component:strategy.id,reason:"invalid_params"}); continue; }
       if (strategy.kind==="overlay") { overlays.push({strategy,params:parsed.data}); continue; }

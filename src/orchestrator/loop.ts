@@ -3,8 +3,10 @@ import { targetKey } from "../cache/merge.js";
 import type { ScannerRow } from "../../schemas/scanner.js";
 import { randomUUID } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
+import { ProviderError } from "../providers/types.js";
+import type { MarketMarkProvider } from "../market-data/contract.js";
 import type { Target } from "../../schemas/common.js";
-import type { ReconCache } from "../cache/recon-cache.js";
+import type { ReconStore } from "../cache/contract.js";
 import { elapsed, failureKind, log, startTimer, withLogContext } from "../logging/operational.js";
 import { CandidateError, SystemError } from "./errors.js";
 import type { DiscoveryScope } from "../tools/discovery.js";
@@ -21,13 +23,14 @@ export interface LoopOptions {
   goPlusAccessToken?: string;
   social?: {x?:string;reddit?:string;subreddit?:string};
   etherscanApiKey?: string;
+  marks?: MarketMarkProvider;
 }
 
 export async function runLoop(
   options: LoopOptions,
   pipeline: Pipeline,
   signal: AbortSignal,
-  cache: ReconCache,
+  cache: ReconStore,
   controls?: WorkerControls,
 ): Promise<void> {
   const seen = new Map<string, number>();
@@ -44,7 +47,7 @@ export async function runLoop(
     await pipeline.live?.reconcile();
     const targets = cache.list().filter(target=>!pipeline.mode || pipeline.mode.chain.enabledChains.includes(target.chain));
     const run_id = randomUUID();
-    const snapshots = new Map<string, ReturnType<ReconCache["read"]>>();
+    const snapshots = new Map<string, ReturnType<ReconStore["read"]>>();
     for (const target of targets) {
       const identity = { ...target, run_id };
       try {
@@ -94,14 +97,16 @@ export async function runLoop(
       const identity = { ...target, run_id };
       const fields = { run_id: identity.run_id, chain: identity.chain };
       const candidateStarted = startTimer();
+      const merged = snapshots.get(targetKey(identity));
+      let baseline:"filled"|"skipped"|"unavailable"="unavailable";
       try {
         await withLogContext(fields, async () => {
           if (cache.isRejected(target)) {
             await pipeline.audit({ identity, stage: "pipeline", status: "skipped", gaps: ["cached_rug_fail"] });
             log("info", "pipeline.skipped", { reason: "cached_rug_fail" });
+            baseline="skipped";
             return;
           }
-          const merged = snapshots.get(targetKey(identity));
           if (!merged) return;
           await pipeline.audit({
             identity,
@@ -118,11 +123,13 @@ export async function runLoop(
             { ...pipeline, signal, rejectRecon: (target) => cache.reject(target) },
             row,
           );
+          baseline=outcome==="skipped"?"skipped":"filled";
           if (row && !row.skipped && (!pipeline.mode || outcome !== "skipped")) seen.set(target.token, Date.now() + scannerLimits.dedup_window_sec * 1000);
           log("info", "candidate.completed", { outcome, duration_ms: elapsed(candidateStarted) });
         });
         failures = 0;
       } catch (error) {
+        if (signal.aborted && error instanceof ProviderError && error.kind==="cancelled") break;
         log(error instanceof CandidateError ? "warn" : "error", "candidate.failed", {
           ...fields,
           failure_kind: failureKind(error),
@@ -150,6 +157,8 @@ export async function runLoop(
           breakerUntil = Date.now() + options.breakerCooldownMs;
           break;
         }
+      } finally {
+        if (merged) pipeline.shadowCandidate?.(merged,baseline);
       }
     }
     if (controls) await pipeline.audit({stage:"worker_cycle",status:"ok",gaps:[],

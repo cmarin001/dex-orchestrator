@@ -1,3 +1,4 @@
+import { candleSchema } from "../../schemas/early-momentum.js";
 import { z } from "zod";
 import { normalizeAddress } from "../../schemas/common.js";
 import type { Target } from "../../schemas/common.js";
@@ -28,4 +29,28 @@ export async function geckoTerminal(target: Target, request: Fetch = fetch) {
     }
   }
   throw new CandidateError("GeckoTerminal returned no matching pool");
+}
+
+const minuteOhlcv = z.object({
+  data:z.object({attributes:z.object({ohlcv_list:z.array(z.tuple([
+    z.number().int().nonnegative(),z.number(),z.number(),z.number(),z.number(),z.number(),
+  ])).max(240)})}),
+  meta:z.object({base:z.object({address:z.string()}),quote:z.object({address:z.string()})}),
+});
+
+export async function geckoMinuteCandles(target:Target, at:number, request:Fetch=fetch) {
+  const {chain,pair,token}=target;
+  const url=new URL(`https://api.geckoterminal.com/api/v2/networks/${networks[chain]}/pools/${encodeURIComponent(pair)}/ohlcv/minute`);
+  url.search=new URLSearchParams({aggregate:"1",limit:"120",currency:"usd",token,
+    include_empty_intervals:"false",before_timestamp:String(Math.floor(at/1000))}).toString();
+  const parsed=minuteOhlcv.safeParse(await getJson(url,request,{Accept:"application/json;version=20230203"}));
+  if (!parsed.success || ![parsed.data.meta.base.address,parsed.data.meta.quote.address].some(address=>normalizeAddress(chain,address)===token)) {
+    throw new CandidateError("GeckoTerminal returned no matching OHLCV token");
+  }
+  const candles=parsed.data.data.attributes.ohlcv_list
+    .filter(([timestamp])=>timestamp*1000+60_000<=at)
+    .map(([timestamp,open,high,low,close,volumeUsd])=>candleSchema.parse({openAt:timestamp*1000,open,high,low,close,volumeUsd}))
+    .sort((a,b)=>a.openAt-b.openAt);
+  if (new Set(candles.map(c=>c.openAt)).size!==candles.length) throw new CandidateError("GeckoTerminal returned duplicate candles");
+  return candles;
 }

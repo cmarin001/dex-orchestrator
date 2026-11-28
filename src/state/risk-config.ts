@@ -1,6 +1,7 @@
+import { createHash } from "node:crypto";
 import { appendFile, mkdir, readFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { riskRevisionSchema } from "../../schemas/risk-config.js";
+import { defaultRisk, riskRevisionSchema } from "../../schemas/risk-config.js";
 import type { RiskRevision } from "../../schemas/risk-config.js";
 import { log, observe } from "../logging/operational.js";
 import { CandidateError } from "../orchestrator/errors.js";
@@ -37,4 +38,11 @@ export function requireFreshRisk(revision: RiskRevision | null, now: number, max
     throw new CandidateError("risk_config_stale_or_missing");
   }
   return revision.config;
+}
+
+export async function riskSnapshot(path:string,required:boolean,maxAgeMs:number,now=Date.now) {
+  const revision=await readRisk(path);
+  const config=revision || required ? requireFreshRisk(revision,now(),maxAgeMs) : defaultRisk;
+  const fingerprint=createHash("sha256").update(JSON.stringify([1,revision,config])).digest("hex");
+  return {config,revision:fingerprint};
 }

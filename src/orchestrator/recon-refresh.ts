@@ -5,10 +5,11 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { Target } from "../../schemas/common.js";
 import type { MarketSnapshot } from "../../schemas/recon-snapshot.js";
 import { toRugChecks } from "../../schemas/recon-checks.js";
-import { dexScreener } from "../tools/dexscreener.js";
+import { marketMarkSchema } from "../market-data/contract.js";
+import { dexScreenerMarks } from "../market-data/dexscreener.js";
 import { reconA } from "../agents/recon-a.js";
 import { reconB } from "../agents/recon-b.js";
-import type { ReconCache } from "../cache/recon-cache.js";
+import type { ReconStore } from "../cache/contract.js";
 import { reconKey } from "../cache/merge.js";
 import { failureKind, log, withLogContext } from "../logging/operational.js";
 import { discover } from "../tools/discovery.js";
@@ -18,9 +19,9 @@ import type { Pipeline } from "./pipeline.js";
 const discoveryIntervalMs = 60_000;
 const watchedIntervalMs = 300_000;
 const retryIntervalMs = 600_000;
-type Schedule = { target: Target; watched: boolean; trigger: MarketSnapshot["trigger"]; starts: number; due: number };
+type Schedule = { target: Target; watched: boolean; trigger: MarketSnapshot["trigger"]; starts: number; due: number; momentumWatching?:boolean };
 
-export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cache: ReconCache, signal: AbortSignal) {
+export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cache: ReconStore, signal: AbortSignal) {
   const schedules = new Map<string, Schedule>();
   let baseline: Awaited<ReturnType<typeof discover>>["statistics"] | undefined;
   while (!signal.aborted) {
@@ -78,6 +79,20 @@ export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cac
         await pipeline.audit({ stage: "market_discovery", status: "failed", gaps: ["discovery_unavailable"] });
       }
     }
+    const momentum=pipeline.executionMode!=="live" && !pipeline.live ? pipeline.mode?.momentumConfig() : undefined;
+    const activelyDiscovered=new Set<string>();
+    if (momentum && baseline && options.discovery) {
+      for (const [key,item] of schedules) {
+        if (item.watched) continue;
+        const observation=baseline.get(item.target.chain+":"+item.target.pair);
+        if (!observation) continue;
+        const age=(started-observation.createdAt)/1000;
+        if (age<momentum.minPoolAgeSec || age>momentum.maxPoolAgeSec ||
+            !(observation.liquidity>=momentum.minLiquidityUsd && observation.volume>=momentum.minVolumeHourUsd)) continue;
+        activelyDiscovered.add(key);
+        if (activelyDiscovered.size>=options.discovery.max_candidates) break;
+      }
+    }
     for (const item of schedules.values()) cache.track(item.target, item.watched);
     for (const item of schedules.values()) {
       if (signal.aborted) break;
@@ -86,9 +101,13 @@ export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cac
         item.due = started;
         continue;
       }
+      const revisit=activelyDiscovered.has(reconKey(item.target));
+      if (revisit && !item.momentumWatching) item.due=Math.min(started,item.due);
+      item.momentumWatching=revisit;
       if (item.due > started || (!item.watched && !baseline?.has(item.target.chain + ":" + item.target.pair))) continue;
       item.starts += 1;
-      item.due = item.watched ? started + (pipeline.mode ? 60_000 : watchedIntervalMs) : item.starts === 1 ? started + retryIntervalMs : Infinity;
+      item.due = revisit ? started+discoveryIntervalMs :
+        item.watched ? started + (pipeline.mode ? 60_000 : watchedIntervalMs) : item.starts === 1 ? started + retryIntervalMs : Infinity;
       const identity = { ...item.target, run_id: randomUUID() };
       await withLogContext({ run_id: identity.run_id, chain: identity.chain }, async () => {
         const mode = item.trigger === "new_pair" ? "new_pairs" : item.trigger;
@@ -109,15 +128,15 @@ export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cac
           const sourceTime = row.source_fetched_at * 1000;
           const field = (value: number) => ({ value, source: row.source, fetched_at: sourceTime });
           const priceTime = Date.now();
-          const price = await dexScreener(identity);
-          const indicative = (value:number)=>({value,source:"dexscreener",fetched_at:priceTime});
+          const price = marketMarkSchema.parse(await (options.marks ?? dexScreenerMarks).mark(identity,signal));
+          const indicative = (value:number)=>({value,source:price.source,fetched_at:priceTime});
           const market = {
             source_fetched_at: sourceTime,
             trigger: row.trigger,
             liquidity_usd: field(row.liquidity_usd),
             vol_1h_usd: field(row.vol_1h_usd),
             age_sec: field(row.age_sec),
-            price_usd: { value: price.price_usd, source: "dexscreener", fetched_at: priceTime },
+            price_usd: indicative(price.price_usd),
             vol_24h_usd:price.vol_24h_usd===undefined?undefined:indicative(price.vol_24h_usd),
             market_cap_usd:price.market_cap_usd===undefined?undefined:indicative(price.market_cap_usd),
           };

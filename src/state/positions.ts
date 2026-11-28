@@ -1,3 +1,4 @@
+import { paperCostsSchema } from "../domain/paper-costs.js";
 import { exitPolicySchema } from "../../schemas/exit-policy.js";
 import { z } from "zod";
 import { positiveUnits } from "../../schemas/transaction-intent.js";
@@ -12,11 +13,19 @@ export const positionSchema = z.strictObject({
   live_amount: positiveUnits.optional(),
   strategy_id: z.string().min(1).optional(),
   exit_policy: exitPolicySchema.optional(),
+  paper_costs: paperCostsSchema.optional(),
 });
 export type Position = z.infer<typeof positionSchema>;
 
 export class Positions {
+  #committingPaperEntry=false;
   readonly #open = new Map<string, Position>();
+
+  beginPaperEntry(): (()=>void) | undefined {
+    if (this.#committingPaperEntry) return undefined;
+    this.#committingPaperEntry=true;
+    return ()=>{ this.#committingPaperEntry=false; };
+  }
 
   get(target: Target): Position | undefined {
     return this.#open.get(targetKey(target));

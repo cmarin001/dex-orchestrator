@@ -1,3 +1,9 @@
+import type { PaperEntryReview, TradeReview } from "../decisions/paper-entry.js";
+import { reconKey } from "../cache/merge.js";
+import { earlyMomentumId } from "../../schemas/early-momentum.js";
+import { selectMomentumOffer, momentumExitPolicy } from "../strategies/early-momentum/entry.js";
+import { liquidationValue, quoteCosts } from "../strategies/early-momentum/quotes.js";
+import { managedPolicy, type MomentumPositions } from "../strategies/early-momentum/monitor.js";
 import type { ScannerRow } from "../../schemas/scanner.js";
 import { equityCurve } from "../agents/equity-curve.js";
 import { executor } from "../agents/executor.js";
@@ -15,10 +21,11 @@ import type { Audit } from "../logging/logger.js";
 import { sizePosition } from "../state/equity.js";
 import type { Equity } from "../state/equity.js";
 import type { Positions } from "../state/positions.js";
-import type { LiveExecution } from "../wallet/live.js";
+import type { ExecutionPort } from "../execution/port.js";
 import type { deploymentGate } from "./deployment.js";
 import type { ModeRuntime } from "../mode/runtime.js";
 import { failureKind, log } from "../logging/operational.js";
+import { paperEntry, type PaperCosts } from "../domain/paper-costs.js";
 import { CandidateError } from "./errors.js";
 
 export const scannerLimits = { min_liquidity_usd: 15_000, min_age_sec: 600, min_vol_1h_usd: 10_000,
@@ -37,10 +44,18 @@ export interface Pipeline {
   riskConfig?: () => Promise<RiskConfig>;
   rejectRecon?: (target: Merged["identity"]) => void;
   exitMode?: "profit_only" | "stop_loss";
-  live?: LiveExecution;
+  live?: ExecutionPort;
+  riskSnapshot?: () => Promise<{config:RiskConfig;revision:string}>;
   mode?: ModeRuntime;
   deployment?: ReturnType<typeof deploymentGate>;
   entriesBlocked?: () => boolean;
+  paperCosts?: PaperCosts;
+  executionMode?: "paper"|"live";
+  paperEntryReview?: PaperEntryReview;
+  jevBuy?: TradeReview;
+  momentumPositions?: MomentumPositions;
+  entryDecision?: (snapshot:Merged,signal?:AbortSignal)=>Promise<boolean>;
+  shadowCandidate?: (snapshot:Merged, outcome:"filled"|"skipped"|"unavailable")=>void;
 }
 
 export async function runCandidate(input: Merged, dependencies: Pipeline, ranked?: ScannerRow): Promise<"paper_fill" | "live_fill" | "skipped"> {
@@ -53,6 +68,8 @@ export async function runCandidate(input: Merged, dependencies: Pipeline, ranked
     log("debug", "pipeline.stage", { ...fields, stage, outcome: "ok" });
   };
   const skip = async (reason: string) => {
+    if (["risk_not_clear","critical_source_conflict","scanner_rejected"].includes(reason) && !dependencies.live &&
+        dependencies.executionMode!=="live") await dependencies.mode?.rejectMomentum(input,reason,audit,now());
     await audit({ identity, stage: "pipeline", status: "skipped", gaps: [...new Set([...input.gaps, reason])] });
     log("info", "pipeline.skipped", { ...fields, reason, gap_count: new Set([...input.gaps, reason]).size });
     return "skipped" as const;
@@ -66,6 +83,9 @@ export async function runCandidate(input: Merged, dependencies: Pipeline, ranked
   }
   if (dependencies.live && identity.chain !== dependencies.live.chain) return skip("live_chain_disabled");
   if (dependencies.live && !dependencies.live.enabled()) return skip("live_execution_disabled");
+  if (positions.list().some(position=>managedPolicy(position.exit_policy) && reconKey(position)===reconKey(identity))) {
+    return skip("managed_token_already_open");
+  }
   const open = positions.get(identity);
   if (open) {
     if (!open.exit_policy) {
@@ -98,10 +118,20 @@ export async function runCandidate(input: Merged, dependencies: Pipeline, ranked
     if (!(error instanceof CandidateError)) throw error;
     return skip("risk_not_clear");
   }
+  if (dependencies.entryDecision && !await dependencies.entryDecision(input,signal)) return skip("required_decision_rejected");
   dependencies.mode?.observe(input);
-  const strategy = await dependencies.mode?.approve(input);
+  const strategy = await dependencies.mode?.approve(input,audit,now());
   if (dependencies.mode && !strategy) return skip("strategy_or_chain_filter");
-  const config = await dependencies.riskConfig?.() ?? defaultRisk;
+  const momentum = strategy && "momentum" in strategy ? strategy.momentum : undefined;
+  if (strategy?.signal?.strategyId===earlyMomentumId) {
+    if (dependencies.live || dependencies.executionMode==="live" || !momentum || !dependencies.momentumPositions) {
+      return skip("early_momentum_paper_only");
+    }
+    if (dependencies.momentumPositions.cooling(identity,now())) return skip("early_momentum_cooldown");
+    if (positions.list().some(position=>reconKey(position)===reconKey(identity))) return skip("early_momentum_token_already_open");
+  }
+  const initialRisk=await dependencies.riskSnapshot?.();
+  const config = initialRisk?.config ?? await dependencies.riskConfig?.() ?? defaultRisk;
   if (dependencies.equityMaxAgeMs && !equity.hasFreshMarks(positions.list(), now(), dependencies.equityMaxAgeMs)) {
     return skip("equity_marks_stale");
   }
@@ -130,16 +160,57 @@ export async function runCandidate(input: Merged, dependencies: Pipeline, ranked
   const capacity = equity.entryCapacityCents(positions.committedCents, config.halt_new_entries_dd);
   if (!capacity) return skip("portfolio_loss_budget_exhausted");
   const budget = riskBudget(config, equity.drawdown_pct, currentEquity, scan.liquidity_usd);
-  const costCents = sizePosition(Math.floor(Math.min(proposal.size_usd * (strategy?.sizeFactor ?? 1), availableCents / 100) * 100), currentEquity, Math.min(capacity, budget, dependencies.mode?.cap(identity,equity,positions) ?? Infinity, dependencies.live?.perTradeCents ?? Infinity), maxPositionBps);
+  const authorizedCents = sizePosition(Math.floor(Math.min(proposal.size_usd * (strategy?.sizeFactor ?? 1), availableCents / 100) * 100), currentEquity, Math.min(capacity, budget, dependencies.mode?.cap(identity,equity,positions) ?? Infinity, dependencies.live?.perTradeCents ?? Infinity), maxPositionBps);
+  const offer = momentum ? selectMomentumOffer(momentum.data,momentum.params,now(),momentum.observedAt,
+    quote.value,authorizedCents,config.max_slippage_bps) : undefined;
+  if (momentum && !offer) return skip("early_momentum_executable_size_unavailable");
+  const costCents=offer ? offer.buy.grossCents+quoteCosts(offer.buy) : authorizedCents;
   await record("sizer", { proposal, approved_cents: costCents, portfolio_capacity_cents: capacity });
   if (costCents === 0) return skip("zero_size");
 
+  let reviewId:string|undefined;
+  let jevDeadline:number|undefined;
+  if (momentum && offer && dependencies.paperEntryReview) {
+    if (dependencies.executionMode!=="paper" || dependencies.live) return skip("paper_entry_review_requires_paper");
+    if (!fresh() || signal?.aborted || dependencies.entriesBlocked?.() || dependencies.deployment?.paused()) {
+      return skip("paper_entry_review_inactive");
+    }
+    const activity=momentum.data.activity;
+    if (!activity || activity.buys+activity.sells===0) return skip("paper_entry_review_missing_activity");
+    reviewId=await dependencies.paperEntryReview({
+      identity,deadline:Math.min(expires_at!,offer.buy.expiresAt,offer.sell.expiresAt,
+        offer.buy.observedAt+momentum.params.maxEvidenceAgeMs,offer.sell.observedAt+momentum.params.maxEvidenceAgeMs,
+        momentum.observedAt+momentum.params.maxEvidenceAgeMs),
+      facts:{pool_age_sec:age_sec,liquidity_usd:liquidity_usd,volume_1h_usd:vol_1h_usd,
+        buy_ratio:activity.buys/(activity.buys+activity.sells),proposed_cost_cents:costCents,
+        quoted_liquidation_cents:liquidationValue(offer.sell)},
+    },signal);
+    if (!reviewId) return skip("paper_entry_review_rejected");
+  }
+
+  if (dependencies.jevBuy && dependencies.mode?.allowsJevTrading()) {
+    if (!fresh() || signal?.aborted || dependencies.entriesBlocked?.() || dependencies.deployment?.paused() ||
+        (dependencies.live && !dependencies.live.enabled())) return skip("jev_buy_inactive");
+    const activity=momentum?.data.activity;
+    const deadline=Math.min(expires_at!,offer?.buy.expiresAt ?? Infinity,offer?.sell.expiresAt ?? Infinity);
+    reviewId=await dependencies.jevBuy({identity,deadline,facts:{
+      pool_age_sec:age_sec,liquidity_usd,volume_1h_usd:vol_1h_usd,proposed_cost_cents:costCents,
+      expected_slippage_bps:input.expected_slippage_bps,
+      ...(offer?{quoted_liquidation_cents:liquidationValue(offer.sell)}:{}),
+      ...(activity && activity.buys+activity.sells>0?{buy_ratio:activity.buys/(activity.buys+activity.sells)}:{}),
+    }},signal);
+    if (!reviewId) return skip("jev_buy_declined");
+    jevDeadline=deadline;
+  }
+
+  if (reviewId && jevDeadline!==undefined) await record("jev_buy_requested",{decision_id:reviewId});
   const exitBase = { entry_price: quote.value, entry_at: now(), min_profit_bps_for_exit: 25,
     timeout_ladder: config.timeout_ladder, max_hold_sec: 3600 };
   const basePolicy: ExitPolicy = dependencies.exitMode === "stop_loss"
     ? { ...exitBase, mode: "stop_loss", stop_loss_bps: 100 }
     : { ...exitBase, mode: "profit_only" };
-  const exit_policy = dependencies.mode?.policy(basePolicy,strategy ?? null) ?? basePolicy;
+  const exit_policy = momentum && offer ? momentumExitPolicy(momentum.params,offer,quote.value,momentum.data.liquidityUsd,now()) :
+    dependencies.mode?.policy(basePolicy,strategy ?? null) ?? basePolicy;
   const recommendation = await executor(call, identity, { action: "entry", position: null,
     sizer: { status: proposal.status, size_usd: costCents / 100, max_slippage_bps: config.max_slippage_bps },
     market: { quote_price: quote.value, expected_slippage_bps: input.expected_slippage_bps, gas_usd: 0, now: Math.floor(now() / 1000) } });
@@ -149,36 +220,65 @@ export async function runCandidate(input: Merged, dependencies: Pipeline, ranked
       recommendation.slippage_bps !== input.expected_slippage_bps || recommendation.gas_usd !== 0 || !recommendation.tx_hash) {
     return skip("executor_rejected");
   }
-  const latest = await dependencies.riskConfig?.() ?? config;
+  if (!fresh() || signal?.aborted) return skip("expired_before_fill");
+  if (dependencies.mode && strategy && !await dependencies.mode.authorize(input,strategy)) return skip("awaiting_strategy_or_approval");
+
+  const latestRisk=await dependencies.riskSnapshot?.();
+  const latest = latestRisk?.config ?? await dependencies.riskConfig?.() ?? config;
+  if (input.expected_slippage_bps > latest.max_slippage_bps) return skip("entry_slippage_limit_changed");
   if (!equity.hasFreshMarks(positions.list(), now(), dependencies.equityMaxAgeMs ?? 60_000)) {
     return skip("equity_marks_stale");
   }
   const remaining = equity.entryCapacityCents(positions.committedCents, latest.halt_new_entries_dd);
+  if (equity.drawdown_pct >= latest.halt_new_entries_dd) return skip("entry_drawdown_limit_changed");
   const latestBudget = riskBudget(latest, equity.drawdown_pct, equity.markedCapitalCents, scan.liquidity_usd);
   if (positions.get(identity) || positions.count >= maxOpenPositions ||
       sizePosition(costCents, equity.markedCapitalCents, Math.min(remaining,latestBudget,dependencies.mode?.cap(identity,equity,positions) ?? Infinity), maxPositionBps) < costCents) {
     return skip("entry_limit_changed");
   }
   if (!fresh() || signal?.aborted) return skip("expired_before_fill");
-  if (dependencies.mode && strategy && !await dependencies.mode.authorize(input,strategy)) return skip("awaiting_strategy_or_approval");
-  if (!fresh() || signal?.aborted) return skip("expired_before_fill");
+  const fillAt=now();
+  if (jevDeadline!==undefined && (fillAt>=jevDeadline || !dependencies.mode?.allowsJevTrading())) {
+    return skip("jev_buy_no_longer_authorized");
+  }
+  if (momentum && offer && (!selectMomentumOffer({...momentum.data,offers:[offer]},momentum.params,
+      fillAt,momentum.observedAt,quote.value,costCents,latest.max_slippage_bps) ||
+      positions.list().some(position=>reconKey(position)===reconKey(identity)))) {
+    return skip("early_momentum_quote_or_exposure_changed");
+  }
 
   if (dependencies.deployment?.paused()) return skip("deployment_paused");
   if (dependencies.entriesBlocked?.()) return skip("entries_paused");
 
-  const position = { ...identity, cost_cents: costCents, entry_price_usd: quote.value,
+  const costs = dependencies.live || offer ? undefined : dependencies.paperCosts;
+  const entryPrice = offer ? costCents/100/offer.buy.tokenAmount : costs ? paperEntry(costCents,quote.value,input.expected_slippage_bps,costs) : quote.value;
+  if (entryPrice===null) return skip("paper_entry_cost_exceeds_budget");
+  const position = { ...identity, cost_cents: costCents, entry_price_usd: entryPrice,
+    ...(costs ? { paper_costs:costs } : {}),
     ...(strategy?.signal ? { strategy_id:strategy.signal.strategyId } : {}),
-    ...(dependencies.exitMode || dependencies.mode ? { exit_policy: { ...exit_policy, entry_at: now() } } : {}) };
+    ...(dependencies.exitMode || dependencies.mode ? { exit_policy: { ...exit_policy, entry_at: fillAt } } : {}) };
   let outcome: "live_fill" | "paper_fill" | "skipped";
   if (dependencies.live) {
+    const authorization=latestRisk && dependencies.riskSnapshot ? {
+      revision:latestRisk.revision,
+      current:async()=> (await dependencies.riskSnapshot!()).revision===latestRisk.revision &&
+        !signal?.aborted && !dependencies.entriesBlocked?.() && !dependencies.deployment?.paused() &&
+        (jevDeadline===undefined || (now()<jevDeadline && dependencies.mode?.allowsJevTrading()===true)),
+    } : undefined;
     const confirmed = await dependencies.live.enter(identity,costCents,quote.value,
-      Math.min(latest.max_slippage_bps,config.max_slippage_bps),exit_policy,expires_at!,strategy?.signal?.strategyId);
+      Math.min(latest.max_slippage_bps,config.max_slippage_bps),exit_policy,Math.min(expires_at!,jevDeadline ?? Infinity),strategy?.signal?.strategyId,authorization);
     outcome = confirmed ? "live_fill" : await skip("live_entry_unconfirmed");
   } else {
-    await audit({ identity, stage: "executor", status: "paper_fill", gaps: [], position });
-    positions.record(position);
-    log("info", "position.opened", { ...fields, outcome: "paper_fill" });
-    equity.mark(position, quote.value, quote.fetched_at);
+    const release=positions.beginPaperEntry();
+    if (!release) return skip("paper_entry_in_progress");
+    try {
+      await audit({ identity, stage: "executor", status: "paper_fill", gaps: [], position,
+        ...(offer ? {detail:{version:1,strategyId:earlyMomentumId,state:"POSITION_OPEN",offer,...(reviewId?{decision_id:reviewId}:{})}} : costs || reviewId ? {detail:{reference_price_usd:quote.value, reference_at:quote.fetched_at,...(reviewId?{decision_id:reviewId}:{})}} : {}) });
+      positions.record(position);
+      log("info", "position.opened", { ...fields, outcome: "paper_fill" });
+      if (offer) equity.markValue(position,liquidationValue(offer.sell),fillAt);
+      else equity.mark(position, quote.value, quote.fetched_at);
+    } finally { release(); }
     outcome = "paper_fill";
   }
 
