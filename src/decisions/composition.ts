@@ -10,7 +10,7 @@ import { JevDecisionProvider } from "./jev.js";
 import { DecisionShadow } from "./shadow.js";
 import type { Audit } from "../logging/logger.js";
 import { DeterministicDecisionProvider } from "./local.js";
-import { paperEntryReview } from "./paper-entry.js";
+import { paperEntryReview, tradeReview } from "./paper-entry.js";
 import { entryDecisionGate } from "./gate.js";
 
 export function configuredEntryGate(env:NodeJS.ProcessEnv,audit:Audit) {
@@ -75,12 +75,13 @@ const paperReviewConfig=z.strictObject({
   timeoutMs:z.number().int().min(50).max(4000).default(2000),
   dailyBudgetUsd:z.number().positive(),
   maxCostPerRequestUsd:z.number().positive(),
-}).refine(config=>config.maxCostPerRequestUsd<=config.dailyBudgetUsd,"Per-call reservation exceeds daily budget");
+});
+const withinBudget=(config:z.infer<typeof paperReviewConfig>)=>config.maxCostPerRequestUsd<=config.dailyBudgetUsd;
 
 export async function configuredJevPaperEntry(env:NodeJS.ProcessEnv, mode:"paper"|"live", auditPath:string, audit:Audit) {
   if (!env.JEV_PAPER_ENTRY) return undefined;
   if (mode!=="paper") throw new Error("JEV_PAPER_ENTRY_REQUIRES_PAPER_MODE");
-  const config=paperReviewConfig.parse(JSON.parse(env.JEV_PAPER_ENTRY));
+  const config=paperReviewConfig.refine(withinBudget).parse(JSON.parse(env.JEV_PAPER_ENTRY));
   const secret=await secretText(env,"AI_GATEWAY_API_KEY");
   if (!secret) throw new Error("JEV_GATEWAY_CREDENTIAL_REQUIRED");
   const budgetPath=auditPath+".jev-paper-budget.jsonl";
@@ -90,4 +91,21 @@ export async function configuredJevPaperEntry(env:NodeJS.ProcessEnv, mode:"paper
   const provider=new JevDecisionProvider(secret,config.responseModels,config.timeoutMs);
   return paperEntryReview(provider,audit,{...config,
     reserve:async()=>Boolean(await budget.reserve(provider.id,config.maxCostPerRequestUsd,limits))});
+}
+
+export async function configuredJevTrading(env:NodeJS.ProcessEnv,mode:"paper"|"live",auditPath:string,audit:Audit) {
+  if (!env.JEV_TRADING) return undefined;
+  if (env.JEV_PAPER_ENTRY) throw new Error("SELECT_ONE_JEV_ENTRY_MODE");
+  const config=paperReviewConfig.extend({executionMode:z.enum(["paper","live"]).default("paper")})
+    .refine(withinBudget).parse(JSON.parse(env.JEV_TRADING));
+  if (config.executionMode!==mode) throw new Error("JEV_TRADING_EXECUTION_MODE_MISMATCH");
+  const secret=await secretText(env,"AI_GATEWAY_API_KEY");
+  if (!secret) throw new Error("JEV_GATEWAY_CREDENTIAL_REQUIRED");
+  const path=auditPath+".jev-trading-budget.jsonl";
+  await requireSeparateJournal(path,auditPath);
+  const budget=new Budget(path);
+  const limits=budgetSchema.parse({dailyUsdCap:config.dailyBudgetUsd});
+  const provider=new JevDecisionProvider(secret,config.responseModels,config.timeoutMs);
+  const options={...config,reserve:async()=>Boolean(await budget.reserve(provider.id,config.maxCostPerRequestUsd,limits))};
+  return {buy:tradeReview(provider,audit,options,"buy"),sell:tradeReview(provider,audit,options,"sell")};
 }

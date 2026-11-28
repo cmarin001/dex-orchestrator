@@ -1,3 +1,4 @@
+import type { JevExitRequests } from "../decisions/exit-requests.js";
 import { managedPolicy, type MomentumPositions } from "../strategies/early-momentum/monitor.js";
 import { liquidationValue } from "../strategies/early-momentum/quotes.js";
 import type { PaperClose } from "../../schemas/trade-history.js";
@@ -25,7 +26,7 @@ import { activeTarget, canExit, stopLossTriggered } from "./policy.js";
 import { paperProceeds } from "../domain/paper-costs.js";
 import { localAgent } from "../mode/local-agent.js";
 
-export async function watchPositions(positions: Positions, equity: Equity, audit: Audit, signal: AbortSignal, _call: CallAgent, refreshMs = 5000, requestedExits = new Set<string>(), live?: LiveExecution, liveSlippage?: () => Promise<number>, mode?:ModeRuntime, flattenRequested: () => boolean = () => false, discretionaryExitsPaused: () => boolean = () => false, marks:MarketMarkProvider=dexScreenerMarks, momentum?:MomentumPositions) {
+export async function watchPositions(positions: Positions, equity: Equity, audit: Audit, signal: AbortSignal, _call: CallAgent, refreshMs = 5000, requestedExits = new Set<string>(), live?: LiveExecution, liveSlippage?: () => Promise<number>, mode?:ModeRuntime, flattenRequested: () => boolean = () => false, discretionaryExitsPaused: () => boolean = () => false, marks:MarketMarkProvider=dexScreenerMarks, momentum?:MomentumPositions, jev?:JevExitRequests) {
   log("info", "watcher.started");
   const targets = new Map<string, number>();
   while (!signal.aborted) {
@@ -34,6 +35,7 @@ export async function watchPositions(positions: Positions, equity: Equity, audit
         log("warn","position.momentum_evidence_unavailable",{failure_kind:failureKind(error)});
       });
     }
+    jev?.prune(positions.list());
     for (const position of positions.list().sort((a,b) => Number(requestedExits.has(tradeKey(b))) - Number(requestedExits.has(tradeKey(a))))) {
       const { exit_policy: policy, run_id, chain, token, pair, cost_cents } = position;
       if (!policy || signal.aborted) continue;
@@ -49,16 +51,19 @@ export async function watchPositions(positions: Positions, equity: Equity, audit
         const price=quote.grossCents/100/quote.tokenAmount;
         equity.markValue(position,proceeds,quote.observedAt);
         await audit({identity,stage:"position_mark",status:"ok",gaps:[],detail:{t:quote.observedAt,price,source:"aggregated"}});
-        if (!state.pending || signal.aborted || quote.expiresAt<=Date.now()) continue;
+        const review=!state.pending ? await approvedJevSale(position,proceeds,at,quote.expiresAt) : undefined;
+        if ((!state.pending && !review) || signal.aborted || quote.expiresAt<=Date.now()) continue;
         if (!forced && (await mode?.exitSignal(identity,false))?.allowed===false) {
           await audit({identity,stage:"early_momentum_exit_blocked",status:"skipped",gaps:["sell_simulation_guard"]});
           continue;
         }
         if (signal.aborted || quote.expiresAt<=Date.now()) continue;
-        const exit_reason=state.pending==="manual_or_emergency"?"manual":state.pending==="fixed_profit"?"target":
+        if (review && !jevReady(review.deadline)) continue;
+        if (review) jev?.consume(position);
+        const exit_reason=review || state.pending==="manual_or_emergency"?"manual":state.pending==="fixed_profit"?"target":
           state.pending==="time_limit"?"timeout":"stop";
         await settlePaper(position,{exit_at:at,exit_price:price,exit_reason,proceeds_cents:proceeds},
-          momentum.exitDetail(position,state,quote,at));
+          {...momentum.exitDetail(position,state,quote,at),...(review?{reason:"jev_discretionary_exit",decision_id:review.id}:{})});
         momentum.closed(position,at);
         await publishClose(identity,[]);
         continue;
@@ -100,34 +105,56 @@ export async function watchPositions(positions: Positions, equity: Equity, audit
       const proposed = forced ? undefined : await mode?.exitSignal(identity,
         !protective && policy.mode === "stop_loss" && !discretionaryExitsPaused());
       const timedByStrategy = !protective && proposed?.exit === true && !discretionaryExitsPaused();
-      if (!forced && (proposed?.allowed === false ||
-          (!protective && !timedByStrategy && !canExit(policy, { price, at })))) continue;
+      const shouldExit=forced || protective || timedByStrategy || canExit(policy,{price,at});
+      if (!forced && proposed?.allowed===false) continue;
+      if (!shouldExit && (!jev || policy.mode!=="stop_loss")) continue;
+      const proceeds = position.paper_costs
+        ? paperProceeds(cost_cents,position.entry_price_usd,price,position.paper_costs)
+        : Math.round(cost_cents * price / policy.entry_price);
+      if (!Number.isSafeInteger(proceeds)) throw new SystemError("Invalid simulated proceeds");
+      const jevSale=!shouldExit ? await approvedJevSale(position,proceeds,at,observed+15_000) : undefined;
+      if (!shouldExit && !jevSale) continue;
       // Position monitoring keeps the existing Executor handoff on the local path.
-      const decision = forced ? null : await executor(localAgent, identity, { action:"exit",sizer:{status:"SIZED",size_usd:cost_cents/100,max_slippage_bps:0},
+      const decision = forced || jevSale ? null : await executor(localAgent, identity, { action:"exit",sizer:{status:"SIZED",size_usd:cost_cents/100,max_slippage_bps:0},
         position:{entry_price:policy.entry_price,opened_at:Math.floor(policy.entry_at/1000),max_hold_sec:timedByStrategy ? 1 : policy.max_hold_sec,
           stop_loss_bps:policy.mode==="stop_loss"?policy.stop_loss_bps:10000,take_profit_bps:active},
         market:{quote_price:price,expected_slippage_bps:0,gas_usd:0,now:Math.floor(at/1000)} });
       if (decision) await audit({ identity,stage:"executor",status:"ok",gaps:[],detail:decision });
       if ((!protective && decision && decision.status !== "FILLED") || !isFresh(observed,15000) || signal.aborted) continue;
-      const proceeds = position.paper_costs
-        ? paperProceeds(cost_cents,position.entry_price_usd,price,position.paper_costs)
-        : Math.round(cost_cents * price / policy.entry_price);
-      if (!Number.isSafeInteger(proceeds)) throw new SystemError("Invalid simulated proceeds");
-      const exit_reason = forced ? "manual" : price < policy.entry_price ? "stop" : timedByStrategy || at - policy.entry_at >= policy.max_hold_sec * 1000
+      if (jevSale && !jevReady(jevSale.deadline)) continue;
+      if (jevSale) jev?.consume(position);
+      const exit_reason = forced || jevSale ? "manual" : price < policy.entry_price ? "stop" : timedByStrategy || at - policy.entry_at >= policy.max_hold_sec * 1000
         ? "timeout" : "target";
       if (live) {
-        if (await live.exit(position,price,await liveSlippage?.() ?? 0,exit_reason)) {
+        const slippage=await liveSlippage?.() ?? 0;
+        if (jevSale) await audit({identity,stage:"jev_sell_requested",status:"ok",gaps:[],
+          detail:{decision_id:jevSale.id,deadline:jevSale.deadline}});
+        if (await live.exit(position,price,slippage,exit_reason,jevSale?()=>jevReady(jevSale.deadline):undefined)) {
           targets.delete(tradeKey(identity));
           requestedExits.delete(tradeKey(identity));
           await publishClose(identity,decision?[{agent:"executor",output:decision}]:[]);
         }
         continue;
       }
-      await settlePaper(position,{exit_at:at,exit_price:price,exit_reason,proceeds_cents:proceeds});
+      await settlePaper(position,{exit_at:at,exit_price:price,exit_reason,proceeds_cents:proceeds},
+        jevSale?{reason:"jev_discretionary_exit",decision_id:jevSale.id}:undefined);
       await publishClose(identity,decision?[{agent:"executor",output:decision}]:[]);
     }
     await sleep(refreshMs, undefined, { signal }).catch(error => { if (!signal.aborted) throw error; });
   }
+  function jevReady(deadline:number) {
+    return Boolean(jev?.isEnabled() && !discretionaryExitsPaused() && !signal.aborted && Date.now()<deadline);
+  }
+
+  async function approvedJevSale(position:Position,value:number,at:number,deadline:number) {
+    if (!jevReady(deadline) || !mode || position.exit_policy?.mode!=="stop_loss") return undefined;
+    const {run_id,chain,token,pair}=position;
+    const approval=jev!.consider({run_id,chain,token,pair},value,position.cost_cents,
+      Math.max(0,Math.floor((at-position.exit_policy.entry_at)/1000)),deadline,signal);
+    if (!approval || !await mode.authorizeJevExit(position)) return undefined;
+    return approval;
+  }
+
   async function settlePaper(position:Position,close:PaperClose,detail?:unknown) {
     const { run_id, chain, token, pair }=position;
     const identity={run_id,chain,token,pair};

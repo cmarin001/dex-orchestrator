@@ -50,6 +50,7 @@ Keep one TypeScript workspace. The new boundaries are checked through the source
 | `ENTRY_DECISION_MIN_LIQUIDITY_USD` | Optional paper-only deterministic entry gate. The number must be at least 15,000 USD. A rejection, abstention, or provider failure skips that entry. |
 | `DECISION_SHADOW` | Optional JSON object for paper AI and hybrid. Common fields are `path`, `horizonMs`, `labelWindowMs`, `notionalCents`, and `costs`. Default provider `jev` additionally uses `responseModels`, `dailyBudgetUsd`, and `maxCostPerRequestUsd`. Provider `deterministic` uses `minLiquidityUsd` as a fixed heuristic and requires no service credential. Supply a distinct journal path and approved per-call budget ceiling. |
 | `AI_GATEWAY_API_KEY_FILE` | Credential for optional Jev paper shadow or paper-entry review. Uses the fixed Vercel Gateway endpoint. |
+| `JEV_TRADING` | Optional Jev buy and sell requests in hybrid mode. Defaults to disabled. See [execution configuration](early-momentum-reversal.md#enable-jev-to-buy-and-sell). |
 | `JEV_PAPER_ENTRY` | Optional paper-only Jev approval of Early Momentum Reversal entries in hybrid mode. See the [strategy configuration](early-momentum-reversal.md#let-jev-approve-paper-execution). |
 | `RESEARCH_RUNTIME`, `RESEARCH_FALLBACK` | Standalone CLI only, values `noop`, `native`, or `hermes`. Defaults to `noop` with no fallback. |
 | `RESEARCH_BUDGET_PATH` | Required for native research. Give this process its own budget journal and billing limits. |

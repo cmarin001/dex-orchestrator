@@ -1,7 +1,8 @@
+import { JevExitRequests } from "./decisions/exit-requests.js";
 import { earlyMomentumId } from "../schemas/early-momentum.js";
 import { managedPolicy, MomentumPositions } from "./strategies/early-momentum/monitor.js";
 import { dexScreenerMarks } from "./market-data/dexscreener.js";
-import { configuredEntryGate, configuredShadow, configuredJevPaperEntry } from "./decisions/composition.js";
+import { configuredEntryGate, configuredShadow, configuredJevPaperEntry, configuredJevTrading } from "./decisions/composition.js";
 import { paperCostsSchema } from "./domain/paper-costs.js";
 import { isFill, isClose } from "./logging/types.js";
 import { chartPointSchema } from "../schemas/live-view.js";
@@ -86,11 +87,13 @@ async function main(): Promise<void> {
 async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void> {
   if (mode==="live" && process.env.PAPER_COSTS) throw new Error("PAPER_COSTS_REQUIRES_PAPER_MODE");
   const paperCosts=process.env.PAPER_COSTS ? paperCostsSchema.parse(JSON.parse(process.env.PAPER_COSTS)) : undefined;
-  const wallet = mode === "live" ? await configuredWallet(process.env) : undefined;
+
   const journal = await readJournal(env.AUDIT_PATH);
   const audit = fileAudit(env.AUDIT_PATH);
+  const trading=await configuredJevTrading(process.env,mode,env.AUDIT_PATH,audit);
   const review=await configuredJevPaperEntry(process.env,mode,env.AUDIT_PATH,audit);
   const entryDecision=mode==="paper" ? configuredEntryGate(process.env,audit) : undefined;
+  const wallet = mode === "live" ? await configuredWallet(process.env) : undefined;
   const address = await wallet?.adapter.address();
   const previousMode = journal.find(event => event.stage === "execution_mode");
   const execution = {mode,chain:wallet?.config.chain ?? null,address:address ?? null};
@@ -185,6 +188,7 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
   const momentumPositions=new MomentumPositions(journal,new StrategyEvidence(process.env.STRATEGY_EVIDENCE_PATH || undefined));
   const pipeline = {
     call: runtime.call, mode:runtime, audit, live, deployment, paperCosts, entryDecision, executionMode:mode, momentumPositions,
+    jevBuy:trading?.buy,
     paperEntryReview:review ? (entry:Parameters<typeof review>[0],signal?:AbortSignal)=>
       runtime.usesTypedDecisions() ? review(entry,signal) : Promise.resolve(undefined) : undefined,
     shadowCandidate:shadow ? (snapshot: Parameters<typeof shadow.observe>[0],outcome: Parameters<typeof shadow.observe>[1]) => {
@@ -206,7 +210,9 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
     },
     equity, positions, maxPositionBps: env.MAX_POSITION_BPS, maxOpenPositions: env.MAX_OPEN_POSITIONS,
   };
-  const watcher = watchPositions(positions, equity, audit, abort.signal, pipeline.call, env.MARK_REFRESH_MS, controls.exits, live, async () => (await pipeline.riskConfig()).max_slippage_bps, runtime, () => controls.safety.flattenRequested(), () => controls.exitsPaused,options.marks,momentumPositions).finally(() => abort.abort());
+  const sellRequests=trading ? new JevExitRequests(trading.sell,
+    ()=>runtime.allowsJevTrading() && !deployment.paused() && (!live || live.enabled())) : undefined;
+  const watcher = watchPositions(positions, equity, audit, abort.signal, pipeline.call, env.MARK_REFRESH_MS, controls.exits, live, async () => (await pipeline.riskConfig()).max_slippage_bps, runtime, () => controls.safety.flattenRequested(), () => controls.exitsPaused,options.marks,momentumPositions,sellRequests).finally(() => abort.abort());
   const refresh = refreshRecon(options, pipeline, cache, abort.signal).finally(() => abort.abort());
   const loop = runLoop(options, pipeline, abort.signal, cache, controls).finally(() => abort.abort());
   const results = await Promise.allSettled([loop, refresh, watcher]);

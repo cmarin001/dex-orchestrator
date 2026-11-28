@@ -127,6 +127,18 @@ The example amounts are reservation limits. Set the per-request reservation base
 
 Clear `JEV_PAPER_ENTRY` and restart the paper worker to resume deterministic handling. The `DECISION_SHADOW` setting remains independent. If both are enabled, their requests count against their own budgets.
 
+### Enable Jev to buy and sell
+
+`JEV_TRADING` is empty by default. Set it on a worker in `OPERATING_MODE=hybrid`, mount `AI_GATEWAY_API_KEY_FILE`, and clear the older `JEV_PAPER_ENTRY` setting. For paper validation use this configuration with `EXECUTION_MODE=paper`.
+
+```dotenv
+JEV_TRADING={"executionMode":"paper","responseModels":["typesafe-ai/jev"],"approvalThreshold":0.85,"timeoutMs":1500,"dailyBudgetUsd":0.10,"maxCostPerRequestUsd":0.01}
+```
+
+A `buy` decision can advance an already eligible, sized candidate. A `sell` decision can request a discretionary close of an existing stop-loss or managed Early Momentum Reversal position. Set `PAPER_EXIT_MODE=stop_loss` for new unmanaged positions intended to accept discretionary sales. Previously recorded policies retain their behavior. Sell reviews run asynchronously with a fresh-data deadline and a per-position request interval. A hold, refusal, timeout or empty budget leaves deterministic exits available. Explicit human approval settings apply to both actions.
+
+Live-capable existing strategies can use the same action feature when the Jev configuration explicitly selects `"executionMode":"live"` and matches a live worker. Arming, venue quote checks, simulation, spending limits, and signer checks still apply. The worker rejects mode mismatches. Early Momentum Reversal remains paper-only.
+
 Use the standalone Hermes research CLI and read-only MCP to review candidate, fill, monitor, and close audit events. Seed research with recorded rejections and unfilled opportunities as well as outcomes. Hermes may propose parameter changes. The normal strategy control and its operator approval own configuration changes.
 
 Replay through `npm run research:replay -- REPLAY_SPEC.json`. Use one canonical pool per chain and token in a tape and provide point-in-time quote, candle, liquidity, and Rug Check evidence. The replay fills at the next eligible observation and uses the managed policy for the same net exit logic. Legacy baselines use the configured paper-cost model. Supported comparisons include `dip-buy`, `new-pair-momentum`, `momentum-ladder`, `new-pool-snipe`, `no-trade`, and `combined-deterministic`. Replay reports net expectancy and return, drawdown on realized equity, frequency, cost, execution success, MFE/MAE, and the fraction of closed positions with no positive observed excursion. Use chronological forward validation and preserve censored outcomes and rejected assets in the input tape.

@@ -54,6 +54,7 @@ export class ModeRuntime {
       log("warn","strategy.evidence_unavailable",{failure_kind:failureKind(error)});
     });
   }
+  allowsJevTrading() { return this.active==="hybrid"; }
   usesTypedDecisions() { return this.active==="ai" || this.active==="hybrid"; }
   usesModels() { return this.active==="ai"; }
   get chain() { return this.plane.settings.chain; }
@@ -191,6 +192,16 @@ export class ModeRuntime {
     if (!proposal.signal && this.active==="strategies") return false;
     return this.plane.signal(targetKey(identity),signal,proposal.sizeFactor,needsHuman,mode.humanApprovalTimeoutSec);
   }
+  async authorizeJevExit(identity:Handoff) {
+    if (!this.allowsJevTrading() || (await this.exitSignal(identity,false)).allowed===false) return false;
+    const mode=this.plane.settings.mode;
+    if (!mode.humanApprovalRequired) return true;
+    return this.plane.signal(targetKey(identity)+":jev-exit",{
+      strategyId:"jev",chain:identity.chain,token:identity.token,side:"exit",confidence:1,reason:"discretionary_exit",
+      proposed:{targetProfitBps:0,stopLossBps:0,timeoutSec:1},
+    },1,true,mode.humanApprovalTimeoutSec);
+  }
+
   async exitSignal(identity:Handoff, allowDiscretionaryExit:boolean) {
     if (this.active==="ai" || this.active==="pause") return {allowed:true,exit:false};
     const ctx=this.context(identity,true);

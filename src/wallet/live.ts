@@ -44,9 +44,9 @@ export function createLiveExecution(settings: Shared) {
     queue = result.then(()=>undefined,()=>undefined);
     return result;
   }
-  async function execute(order: Order, recoverOnly = false) {
+  async function execute(order: Order, recoverOnly = false, allowed?:()=>boolean) {
     const {intent,identity,position,action} = order;
-    const receipt = await (recoverOnly ? signer.reconcile(intent) : signer.signAndSend(intent, action === "entry" ? settings.entryAllowed : undefined)).catch(async (error: unknown) => {
+    const receipt = await (recoverOnly ? signer.reconcile(intent) : signer.signAndSend(intent, action === "entry" ? settings.entryAllowed : allowed)).catch(async (error: unknown) => {
       if (!(error instanceof Error) || !walletNotSent.has(error.message)) throw new SystemError("Live execution requires reconciliation");
       if (error.message === "UNRECONCILED_TRANSACTION") return null;
       await audit({identity,stage:"live_settled",status:"failed",detail:{reason:error.message},gaps:[error.message]});
@@ -88,14 +88,14 @@ export function createLiveExecution(settings: Shared) {
     pending.delete(intent.run_id);
     return true;
   }
-  async function submit(order: Order) {
+  async function submit(order: Order, allowed?:()=>boolean) {
     const enabled = order.action === "exit" ? settings.exitAllowed?.() ?? settings.enabled() :
       settings.enabled() && settings.entryAllowed?.() !== false;
-    if (!enabled || pending.size) return false;
+    if (!enabled || pending.size || allowed?.()===false) return false;
     const validated = orderSchema.parse(order);
     await audit({identity:order.identity,stage:"live_intent",status:"ok",detail:validated,gaps:[]});
     pending.set(order.intent.run_id,validated);
-    return execute(validated);
+    return execute(validated,false,allowed);
   }
   function tokenDecimals(token:string) {
     const n = decimals.get(config.chain === "solana" ? token : token.toLowerCase());
@@ -134,8 +134,9 @@ export function createLiveExecution(settings: Shared) {
         return submit({identity:walletRun,intent:tx,source_run_id:identity.run_id,action:"entry",position:{...identity,cost_cents:Math.round(actualSettlementUnits*100),entry_price_usd:price,exit_policy,...(strategyId ? {strategy_id:strategyId} : {})}});
       });
     },
-    exit(position:Position, price:number, slippageBps:number, reason:z.infer<typeof exitReasonSchema>) {
+    exit(position:Position, price:number, slippageBps:number, reason:z.infer<typeof exitReasonSchema>, allowed?:()=>boolean) {
       return serialize(async()=> {
+        if (allowed?.()===false) return false;
         const open = positions.get(position);
         if (!open?.live_amount || open.run_id !== position.run_id || open.chain !== config.chain) return false;
         position = open;
@@ -143,7 +144,7 @@ export function createLiveExecution(settings: Shared) {
         const usd = Number(open.live_amount) / 10 ** tokenDecimals(position.token) * price;
         const minimum = units(usd*(1-slippageBps/10_000),stableDecimals,Math.ceil);
         const tx = intent(identity,Math.ceil(usd*100*usdPerUnit),position.token,stable,open.live_amount,minimum,true);
-        return submit({identity,intent:tx,source_run_id:position.run_id,action:"exit",position,reason});
+        return submit({identity,intent:tx,source_run_id:position.run_id,action:"exit",position,reason},allowed);
       });
     },
   };
