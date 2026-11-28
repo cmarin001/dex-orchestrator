@@ -22,3 +22,27 @@ test("all four configs share one Chat Completions adapter with usage normalizati
     assert.equal((await api.health()).ok,true);
   }
 });
+
+test("text streaming emits deltas and retains usage without treating partial text as a result",async()=>{
+  const {definitions}=await initialSettings({});
+  const config={...definitions.openai!,capabilities:{...definitions.openai!.capabilities,streamingText:true,streamingUsage:true}};
+  const parts=[
+    'data: {"choices":[{"delta":{"content":"hel"},"finish_reason":null}]}\n\n',
+    'data: {"choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}]}\n\n',
+    'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":2}}\n\ndata: [DONE]\n\n',
+  ];
+  const api=new OpenAICompatProvider("openai",config,"fixture",async(_url,init)=>{
+    const request=JSON.parse(String(init?.body));
+    assert.equal(request.stream,true);
+    assert.equal(request.stream_options.include_usage,true);
+    assert.equal(request.response_format,undefined);
+    return new Response(parts.join(""));
+  });
+  const deltas:string[]=[];
+  const result=await api.complete({...req,output:"text",onTextDelta:text=>deltas.push(text)});
+  assert.deepEqual(deltas,["hel","lo"]);
+  assert.equal(result.content,"hello");
+  assert.deepEqual(result.usage,{input:5,output:2,cached:0});
+  const truncated=new OpenAICompatProvider("openai",config,"fixture",async()=>new Response(parts[0]));
+  await assert.rejects(truncated.complete({...req,output:"text",onTextDelta:()=>{}}),/schema_mismatch/);
+});

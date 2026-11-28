@@ -1,3 +1,6 @@
+import { dexScreenerMarks } from "./market-data/dexscreener.js";
+import { configuredEntryGate, configuredShadow } from "./decisions/composition.js";
+import { paperCostsSchema } from "./domain/paper-costs.js";
 import { isFill, isClose } from "./logging/types.js";
 import { chartPointSchema } from "../schemas/live-view.js";
 import { defaultRisk } from "../schemas/risk-config.js";
@@ -23,7 +26,7 @@ import { Inbox } from "./control/commands.js";
 import { WorkerControls } from "./control/worker.js";
 import { configuredWallet } from "./wallet/config.js";
 import { Budget } from "./providers/budget.js";
-import { OpenAICompatProvider } from "./providers/adapter.js";
+import { reasoningProviders } from "./providers/composition.js";
 import { Router } from "./providers/router.js";
 import { providerAgent } from "./providers/agent.js";
 import { initialSettings } from "./mode/config.js";
@@ -78,9 +81,12 @@ async function main(): Promise<void> {
 }
 
 async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void> {
+  if (mode==="live" && process.env.PAPER_COSTS) throw new Error("PAPER_COSTS_REQUIRES_PAPER_MODE");
+  const paperCosts=process.env.PAPER_COSTS ? paperCostsSchema.parse(JSON.parse(process.env.PAPER_COSTS)) : undefined;
   const wallet = mode === "live" ? await configuredWallet(process.env) : undefined;
   const journal = await readJournal(env.AUDIT_PATH);
   const audit = fileAudit(env.AUDIT_PATH);
+  const entryDecision=mode==="paper" ? configuredEntryGate(process.env,audit) : undefined;
   const address = await wallet?.adapter.address();
   const previousMode = journal.find(event => event.stage === "execution_mode");
   const execution = {mode,chain:wallet?.config.chain ?? null,address:address ?? null};
@@ -129,7 +135,9 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
       cache.reject(identity);
     } else if (isFill(event.status) && position) {
       positions.record(position);
-      equity.mark(position, position.entry_price_usd, Date.parse(event.at));
+      const reference=z.object({reference_price_usd:z.number().positive(),reference_at:z.number().int()}).safeParse(event.detail);
+      if (position.paper_costs && reference.success) equity.mark(position,reference.data.reference_price_usd,reference.data.reference_at);
+      else equity.mark(position, position.entry_price_usd, Date.parse(event.at));
     } else if (isClose(event.status) && position && close) {
       positions.close(position);
       equity.close(position, close.proceeds_cents, close.exit_at);
@@ -149,24 +157,24 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
   log("info", "worker.started", { count: uniqueTargets.length });
   await audit({stage:"worker_lifecycle",status:"ok",gaps:[],detail:"running"});
   const options = {
-    targets: uniqueTargets, discovery, intervalMs: env.LOOP_INTERVAL_MS,
+    targets: uniqueTargets, discovery, marks:dexScreenerMarks, intervalMs: env.LOOP_INTERVAL_MS,
     breakerFailures: env.BREAKER_FAILURES, breakerCooldownMs: env.BREAKER_COOLDOWN_MS,
     goPlusAccessToken: await secretText(process.env,"GOPLUS_ACCESS_TOKEN"),
     etherscanApiKey: await secretText(process.env,"ETHERSCAN_API_KEY"),
     social:{x:await secretText(process.env,"X_BEARER_TOKEN"),reddit:await secretText(process.env,"REDDIT_ACCESS_TOKEN"),
       subreddit:process.env.REDDIT_SUBREDDIT},
   };
-  const configured=await Promise.all(Object.entries(settings.definitions).map(async ([id,definition])=>{
-    const key=definition.apiKeyEnv ? await secretText(process.env,definition.apiKeyEnv) : undefined;
-    return definition.apiKeyEnv && !key ? null : [id,new OpenAICompatProvider(id,definition,key)] as const;
-  }));
-  const providers=new Map(configured.filter(row=>row!==null));
+  const providers=await reasoningProviders(settings,process.env);
   const router=new Router(providers,budget,Date.now,async detail=>{
     await audit({stage:"model_provider",status:detail.ok?"ok":"failed",gaps:[],detail});
   });
   const runtime=new ModeRuntime(plane,providerAgent(router,()=>settings,abort.signal),new StrategyEvidence(process.env.STRATEGY_EVIDENCE_PATH || undefined));
+  const shadow=mode==="paper" ? await configuredShadow(process.env,env.AUDIT_PATH,abort.signal) : undefined;
   const pipeline = {
-    call: runtime.call, mode:runtime, audit, live, deployment,
+    call: runtime.call, mode:runtime, audit, live, deployment, paperCosts, entryDecision,
+    shadowCandidate:shadow ? (snapshot: Parameters<typeof shadow.observe>[0],outcome: Parameters<typeof shadow.observe>[1]) => {
+      if (runtime.usesTypedDecisions()) shadow.observe(snapshot,outcome);
+    } : undefined,
     entriesBlocked: () => controls.paused,
     exitMode: env.PAPER_EXIT_MODE,
     equityMaxAgeMs: env.MAX_EQUITY_AGE_SEC * 1000,
@@ -177,10 +185,11 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
     },
     equity, positions, maxPositionBps: env.MAX_POSITION_BPS, maxOpenPositions: env.MAX_OPEN_POSITIONS,
   };
-  const watcher = watchPositions(positions, equity, audit, abort.signal, pipeline.call, env.MARK_REFRESH_MS, controls.exits, live, async () => (await pipeline.riskConfig()).max_slippage_bps, runtime, () => controls.safety.flattenRequested(), () => controls.exitsPaused).finally(() => abort.abort());
+  const watcher = watchPositions(positions, equity, audit, abort.signal, pipeline.call, env.MARK_REFRESH_MS, controls.exits, live, async () => (await pipeline.riskConfig()).max_slippage_bps, runtime, () => controls.safety.flattenRequested(), () => controls.exitsPaused,options.marks).finally(() => abort.abort());
   const refresh = refreshRecon(options, pipeline, cache, abort.signal).finally(() => abort.abort());
   const loop = runLoop(options, pipeline, abort.signal, cache, controls).finally(() => abort.abort());
   const results = await Promise.allSettled([loop, refresh, watcher]);
+  await shadow?.settled();
   await audit({stage:"worker_lifecycle",status:"ok",gaps:[],detail:"stopped"});
   for (const result of results) if (result.status === "rejected") throw result.reason;
   log("info", "worker.stopped");

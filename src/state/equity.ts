@@ -1,4 +1,5 @@
 import type { EquityCurveInput } from "../../schemas/equity-curve.js";
+import { paperProceeds } from "../domain/paper-costs.js";
 import { targetKey } from "../cache/merge.js";
 import type { Position } from "./positions.js";
 
@@ -64,7 +65,7 @@ export class Equity {
   }
 
   mark(position: Position, priceUsd: number, observedAt = Date.now()): void {
-    const valueCents = Math.round(position.cost_cents * (priceUsd / position.entry_price_usd));
+    const valueCents = paperProceeds(position.cost_cents, position.entry_price_usd, priceUsd, position.paper_costs);
     if (!Number.isSafeInteger(valueCents) || valueCents < 0) throw new RangeError("Invalid marked position value");
     const key = targetKey(position);
     const gain = valueCents - position.cost_cents;

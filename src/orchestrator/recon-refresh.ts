@@ -5,7 +5,8 @@ import { setTimeout as sleep } from "node:timers/promises";
 import type { Target } from "../../schemas/common.js";
 import type { MarketSnapshot } from "../../schemas/recon-snapshot.js";
 import { toRugChecks } from "../../schemas/recon-checks.js";
-import { dexScreener } from "../tools/dexscreener.js";
+import { marketMarkSchema } from "../market-data/contract.js";
+import { dexScreenerMarks } from "../market-data/dexscreener.js";
 import { reconA } from "../agents/recon-a.js";
 import { reconB } from "../agents/recon-b.js";
 import type { ReconCache } from "../cache/recon-cache.js";
@@ -109,15 +110,15 @@ export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cac
           const sourceTime = row.source_fetched_at * 1000;
           const field = (value: number) => ({ value, source: row.source, fetched_at: sourceTime });
           const priceTime = Date.now();
-          const price = await dexScreener(identity);
-          const indicative = (value:number)=>({value,source:"dexscreener",fetched_at:priceTime});
+          const price = marketMarkSchema.parse(await (options.marks ?? dexScreenerMarks).mark(identity,signal));
+          const indicative = (value:number)=>({value,source:price.source,fetched_at:priceTime});
           const market = {
             source_fetched_at: sourceTime,
             trigger: row.trigger,
             liquidity_usd: field(row.liquidity_usd),
             vol_1h_usd: field(row.vol_1h_usd),
             age_sec: field(row.age_sec),
-            price_usd: { value: price.price_usd, source: "dexscreener", fetched_at: priceTime },
+            price_usd: indicative(price.price_usd),
             vol_24h_usd:price.vol_24h_usd===undefined?undefined:indicative(price.vol_24h_usd),
             market_cap_usd:price.market_cap_usd===undefined?undefined:indicative(price.market_cap_usd),
           };

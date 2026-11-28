@@ -1,0 +1,19 @@
+services:
+  research:
+    profiles: [research]
+    image: ${IMAGE_TAG:-dex-orchestrator:local}
+    entrypoint: [node]
+    command: [dist/src/agent-runtime/cli.js]
+    init: true
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp]
+    volumes:
+      - "${DEX_RESEARCH_INPUT:-../../data}:/input:ro"
+    environment:
+      RESEARCH_RUNTIME: noop
+      LOG_LEVEL: warn
+    healthcheck:
+      disable: true

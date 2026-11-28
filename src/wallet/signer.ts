@@ -39,6 +39,7 @@ const journalSchema = z.discriminatedUnion("event", [
   z.strictObject({ event:z.literal("reserve"), hash:z.string(), intent:reservationIntent, at:z.number() }),
   z.strictObject({ event:z.literal("release"), run_id:z.string() }),
   z.strictObject({ event:z.literal("signed"), run_id:z.string(), identifier:identifierSchema }),
+  z.strictObject({ event:z.literal("withheld"), run_id:z.string(), identifier:identifierSchema }),
   z.strictObject({ event:z.literal("receipt"), run_id:z.string(), receipt:txReceiptSchema }),
 ]);
 type WalletEvent = z.infer<typeof journalSchema>;
@@ -63,7 +64,10 @@ export function createSigner(adapter: ChainAdapter, caps: WalletConfig, audit: A
       return;
     }
     if (row.event === "signed") { record.attempts.push(row.identifier); record.receipt = undefined; }
-    else record.receipt = row.receipt;
+    else if (row.event === "withheld") {
+      if (record.attempts.at(-1)?.id !== row.identifier.id) throw new Error("WALLET_JOURNAL_INVALID");
+      record.attempts.pop();
+    } else record.receipt = row.receipt;
   }
   for (const row of journal) if (row.stage === "wallet") apply(journalSchema.parse(row.detail));
   async function record(row: WalletEvent) {
@@ -138,21 +142,26 @@ export function createSigner(adapter: ChainAdapter, caps: WalletConfig, audit: A
       if (state === "disarmed") throw new Error("SIGNER_DISARMED");
       if (state === "reduce_only" && !intent.reduce_only) throw new Error("REDUCE_ONLY_VIOLATION");
     }
-    async function send(prepared: Prepared) {
-      requireSimulation(intent, prepared.simulation);
-      await audit({stage:"wallet_simulation",status:"ok",gaps:[],detail:{run_id,simulation:prepared.simulation}});
+    function checkCurrentAuthorization() {
       if (Date.now() >= intent.deadline_sec * 1000) throw new Error("INTENT_EXPIRED");
-      authorize();
-      if (!enabled(intent)) throw new Error("LIVE_EXECUTION_DISABLED");
-      const signed = await prepared.sign();
-      if (Date.now() >= intent.deadline_sec * 1000) throw new Error("INTENT_EXPIRED");
-      const identifier = identifierSchema.parse({id:signed.id,expires_at_height:signed.expires_at_height});
-      if (active.some(attempt => attempt.id === identifier.id)) throw new Error("DUPLICATE_REPLACEMENT");
       authorize();
       if (!enabled(intent)) throw new Error("LIVE_EXECUTION_DISABLED");
       if (allowed?.() === false) throw new Error("DEPLOYMENT_PAUSED");
+    }
+    async function send(prepared: Prepared) {
+      requireSimulation(intent, prepared.simulation);
+      await audit({stage:"wallet_simulation",status:"ok",gaps:[],detail:{run_id,simulation:prepared.simulation}});
+      checkCurrentAuthorization();
+      const signed = await prepared.sign();
+      const identifier = identifierSchema.parse({id:signed.id,expires_at_height:signed.expires_at_height});
+      if (active.some(attempt => attempt.id === identifier.id)) throw new Error("DUPLICATE_REPLACEMENT");
+      checkCurrentAuthorization();
       await record({event:"signed",run_id,identifier});
-      authorize();
+      try { checkCurrentAuthorization(); }
+      catch (error) {
+        await record({event:"withheld",run_id,identifier});
+        throw error;
+      }
       await broadcastSigned(signed, bytes => adapter.broadcast(bytes));
     }
     try {

@@ -2,6 +2,7 @@ import { executor } from "../agents/executor.js";
 import { equityCurve } from "../agents/equity-curve.js";
 import { logger } from "../agents/logger.js";
 import type { CallAgent } from "../agents/call.js";
+import { chartPointSchema } from "../../schemas/live-view.js";
 import { tradeKey } from "../../schemas/common.js";
 import { setTimeout as sleep } from "node:timers/promises";
 import { isFresh } from "../cache/ttl.js";
@@ -12,10 +13,13 @@ import type { Equity } from "../state/equity.js";
 import type { Positions } from "../state/positions.js";
 import type { LiveExecution } from "../wallet/live.js";
 import type { ModeRuntime } from "../mode/runtime.js";
-import { dexScreener } from "../tools/dexscreener.js";
-import { activeTarget, canExit } from "./policy.js";
+import { marketMarkSchema, type MarketMarkProvider } from "../market-data/contract.js";
+import { dexScreenerMarks } from "../market-data/dexscreener.js";
+import { activeTarget, canExit, stopLossTriggered } from "./policy.js";
+import { paperProceeds } from "../domain/paper-costs.js";
+import { localAgent } from "../mode/local-agent.js";
 
-export async function watchPositions(positions: Positions, equity: Equity, audit: Audit, signal: AbortSignal, call: CallAgent, refreshMs = 5000, requestedExits = new Set<string>(), live?: LiveExecution, liveSlippage?: () => Promise<number>, mode?:ModeRuntime, flattenRequested: () => boolean = () => false, discretionaryExitsPaused: () => boolean = () => false) {
+export async function watchPositions(positions: Positions, equity: Equity, audit: Audit, signal: AbortSignal, _call: CallAgent, refreshMs = 5000, requestedExits = new Set<string>(), live?: LiveExecution, liveSlippage?: () => Promise<number>, mode?:ModeRuntime, flattenRequested: () => boolean = () => false, discretionaryExitsPaused: () => boolean = () => false, marks:MarketMarkProvider=dexScreenerMarks) {
   log("info", "watcher.started");
   const targets = new Map<string, number>();
   while (!signal.aborted) {
@@ -26,7 +30,12 @@ export async function watchPositions(positions: Positions, equity: Equity, audit
       const fields = { run_id, chain };
       const observed = Date.now();
       let price: number;
-      try { ({ price_usd: price } = await withLogContext(fields, () => dexScreener(identity))); }
+      let source: string;
+      try {
+        const mark=marketMarkSchema.safeParse(await withLogContext(fields, () => marks.mark(identity,signal)));
+        if (!mark.success) throw new CandidateError("Invalid market mark");
+        ({price_usd:price,source}=mark.data);
+      }
       catch (error) {
         log("warn", "position.mark_failed", { ...fields, failure_kind: failureKind(error) });
         if (!(error instanceof CandidateError || error instanceof SystemError)) throw error;
@@ -38,8 +47,10 @@ export async function watchPositions(positions: Positions, equity: Equity, audit
         log("debug", "position.mark_discarded", { ...fields, reason: signal.aborted ? "shutdown" : "stale_quote" });
         continue;
       }
+      const compatibleSource=chartPointSchema.shape.source.safeParse(source);
       await audit({ identity, stage: "position_mark", status: "ok", gaps: [],
-        detail: { t: observed, price, source: "dexscreener" } });
+        detail: { t: observed, price, source:compatibleSource.data ?? "aggregated" } });
+      log("debug","position.marked",{...fields,provider:source});
       equity.mark(position, price, observed);
       const active = activeTarget(policy, at);
       const previous = targets.get(tradeKey(identity)) ?? activeTarget(policy, policy.entry_at);
@@ -50,16 +61,22 @@ export async function watchPositions(positions: Positions, equity: Equity, audit
       }
       if (!isFresh(observed, 15_000) || signal.aborted) continue;
       const forced = flattenRequested() || requestedExits.has(tradeKey(identity));
-      const proposed = forced ? undefined : await mode?.exitSignal(identity, policy.mode === "stop_loss" && !discretionaryExitsPaused());
-      const timedByStrategy = proposed?.exit === true && !discretionaryExitsPaused();
-      if (!forced && (proposed?.allowed === false || (!timedByStrategy && !canExit(policy, { price, at })))) continue;
-      const decision = forced ? null : await executor(call, identity, { action:"exit",sizer:{status:"SIZED",size_usd:cost_cents/100,max_slippage_bps:0},
+      const protective = stopLossTriggered(policy, { price, at });
+      const proposed = forced ? undefined : await mode?.exitSignal(identity,
+        !protective && policy.mode === "stop_loss" && !discretionaryExitsPaused());
+      const timedByStrategy = !protective && proposed?.exit === true && !discretionaryExitsPaused();
+      if (!forced && (proposed?.allowed === false ||
+          (!protective && !timedByStrategy && !canExit(policy, { price, at })))) continue;
+      // Position monitoring keeps the existing Executor handoff on the local path.
+      const decision = forced ? null : await executor(localAgent, identity, { action:"exit",sizer:{status:"SIZED",size_usd:cost_cents/100,max_slippage_bps:0},
         position:{entry_price:policy.entry_price,opened_at:Math.floor(policy.entry_at/1000),max_hold_sec:timedByStrategy ? 1 : policy.max_hold_sec,
           stop_loss_bps:policy.mode==="stop_loss"?policy.stop_loss_bps:10000,take_profit_bps:active},
         market:{quote_price:price,expected_slippage_bps:0,gas_usd:0,now:Math.floor(at/1000)} });
       if (decision) await audit({ identity,stage:"executor",status:"ok",gaps:[],detail:decision });
-      if ((decision && decision.status !== "FILLED") || !isFresh(observed,15000) || signal.aborted) continue;
-      const proceeds = Math.round(cost_cents * price / policy.entry_price);
+      if ((!protective && decision && decision.status !== "FILLED") || !isFresh(observed,15000) || signal.aborted) continue;
+      const proceeds = position.paper_costs
+        ? paperProceeds(cost_cents,position.entry_price_usd,price,position.paper_costs)
+        : Math.round(cost_cents * price / policy.entry_price);
       if (!Number.isSafeInteger(proceeds)) throw new SystemError("Invalid simulated proceeds");
       const exit_reason = forced ? "manual" : price < policy.entry_price ? "stop" : timedByStrategy || at - policy.entry_at >= policy.max_hold_sec * 1000
         ? "timeout" : "target";
@@ -81,10 +98,10 @@ export async function watchPositions(positions: Positions, equity: Equity, audit
       requestedExits.delete(tradeKey(identity));
       await publishClose();
       async function publishClose() {
-        const projection = await equityCurve(call,identity,{starting_equity_usd:equity.initialCents/100,closed_trades:equity.closedTrades(),
+        const projection = await equityCurve(localAgent,identity,{starting_equity_usd:equity.initialCents/100,closed_trades:equity.closedTrades(),
           as_of:Math.floor(Date.now()/1000)});
         await audit({identity,stage:"equity-curve",status:"ok",detail:projection,gaps:[]});
-        const trace = await logger(call,identity,[...(decision ? [{agent:"executor" as const,output:decision}] : []),{agent:"equity",output:projection}]);
+        const trace = await logger(localAgent,identity,[...(decision ? [{agent:"executor" as const,output:decision}] : []),{agent:"equity",output:projection}]);
         await audit({identity,stage:"logger",status:"ok",detail:trace,gaps:trace.rows.flatMap(row=>row.gaps)});
       }
     }

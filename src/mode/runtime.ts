@@ -47,6 +47,7 @@ export class ModeRuntime {
       log("warn","strategy.evidence_unavailable",{failure_kind:failureKind(error)});
     });
   }
+  usesTypedDecisions() { return this.active==="ai" || this.active==="hybrid"; }
   usesModels() { return this.active==="ai"; }
   get chain() { return this.plane.settings.chain; }
 

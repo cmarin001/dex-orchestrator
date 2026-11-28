@@ -1,12 +1,22 @@
 import { z } from "zod";
 export const providerConfigSchema = z.strictObject({
+  protocol:z.literal("openai-compatible").optional(),
   enabled: z.boolean().default(false),
   baseUrl: z.url({protocol:/^https?$/}),
   model: z.string().min(1),
+  stageModels: z.record(z.string().min(1),z.string().min(1)).optional(),
   apiKeyEnv: z.string().regex(/^[A-Z][A-Z0-9_]*$/).optional(),
+  thinking: z.enum(["enabled","disabled"]).optional(),
+  timeoutMs: z.number().int().min(50).max(120_000).optional(),
   outputTokenField:z.enum(["max_tokens","max_completion_tokens"]).default("max_tokens"),
   capabilities: z.strictObject({
     structuredOutputs: z.boolean(),
+    jsonMode: z.boolean().optional(),
+    toolsWithJson: z.boolean().optional(),
+    preserveReasoning: z.boolean().optional(),
+    streamingText: z.boolean().optional(),
+    streamingUsage: z.boolean().optional(),
+    requiredToolChoice: z.boolean().optional(),
     tools: z.boolean(),
     maxContextTokens: z.number().int().positive(),
     costPerMTokIn: z.number().nonnegative(),
