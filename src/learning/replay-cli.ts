@@ -1,3 +1,6 @@
+import { earlyMomentumEvidenceSchema } from "../../schemas/early-momentum.js";
+import { Registry } from "../strategies/registry.js";
+import type { Strategy } from "../strategies/strategy.js";
 import { readFile } from "node:fs/promises";
 import { z } from "zod";
 import { walletChainSchema } from "../../schemas/transaction-intent.js";
@@ -11,7 +14,8 @@ const spec=z.strictObject({
   strategy:z.string().min(1),
   candidates:z.array(z.record(z.string(),z.unknown())).min(1).max(32),
   feed:z.array(z.strictObject({token:z.string().min(1),chain:walletChainSchema,
-    rugPassed:z.boolean(),assetClass:z.enum(["memecoin","utility","stable"]).optional(),current:z.strictObject({
+    rugPassed:z.boolean(),pair:z.string().min(1).optional(),sellSimulation:z.boolean().optional(),
+    earlyMomentum:z.strictObject({observedAt:timestamp,data:earlyMomentumEvidenceSchema}).optional(),assetClass:z.enum(["memecoin","utility","stable"]).optional(),current:z.strictObject({
       at:timestamp,source:z.string().min(1),price:z.number().positive(),volume:z.number().nonnegative(),
       liquidity:z.number().nonnegative(),age:z.number().nonnegative(),
       volume24h:z.number().nonnegative().optional(),marketCap:z.number().nonnegative().optional(),
@@ -26,7 +30,12 @@ const spec=z.strictObject({
 const path=process.argv[2];
 if (!path) throw new Error("Usage: npm run research:replay -- REPLAY_SPEC.json");
 const {strategy:id,candidates,feed,settings,windows,criteria}=spec.parse(JSON.parse(await readFile(path,"utf8")));
-const strategy=builtins.find(item=>item.id===id && item.kind==="signal");
+const registry=new Registry();
+const baseline:Strategy={id,name:id,kind:"signal",version:1,params:z.strictObject({}),assetClasses:["memecoin","utility","stable"],
+  chains:["base","solana","ethereum","arbitrum","bsc","polygon","optimism"],
+  evaluate:ctx=>id==="no-trade" ? null : registry.decide(ctx,{}, {mode:"weighted"})};
+const strategy=id==="no-trade" || id==="combined-deterministic" ? baseline :
+  builtins.find(item=>item.id===id && item.kind==="signal");
 if (!strategy) throw new Error("Unknown signal strategy");
 process.stdout.write(JSON.stringify({strategy:id,version:strategy.version,
   results:walkForward(strategy,candidates,feed,settings,windows,criteria)},null,2)+"\n");

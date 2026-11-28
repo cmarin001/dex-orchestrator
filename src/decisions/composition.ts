@@ -24,6 +24,7 @@ export function configuredEntryGate(env:NodeJS.ProcessEnv,audit:Audit) {
 
 const shadowPolicy={
   path:z.string().min(1),
+  scope:z.enum(["market","early_momentum"]).optional(),
   horizonMs:z.number().int().min(30_000).max(86_400_000),
   labelWindowMs:z.number().int().min(1).max(86_400_000),
   notionalCents:z.number().int().min(1).max(1_000_000),
@@ -50,7 +51,7 @@ export async function configuredShadow(env:NodeJS.ProcessEnv, auditPath:string, 
   const config=shadowConfig.parse({provider:"jev",...z.record(z.string(),z.unknown()).parse(raw)});
   await requireSeparateJournal(config.path,auditPath);
   const {horizonMs,labelWindowMs,notionalCents,costs}=config;
-  const policy={horizonMs,labelWindowMs,notionalCents,costs};
+  const policy={horizonMs,labelWindowMs,notionalCents,costs,...(config.scope?{scope:config.scope}:{})};
   const audit=fileAudit(config.path);
   if (config.provider==="deterministic") {
     const rule=new DeterministicDecisionProvider(new Map([["positive_net_return",request=>({

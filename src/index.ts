@@ -1,3 +1,5 @@
+import { earlyMomentumId } from "../schemas/early-momentum.js";
+import { managedPolicy, MomentumPositions } from "./strategies/early-momentum/monitor.js";
 import { dexScreenerMarks } from "./market-data/dexscreener.js";
 import { configuredEntryGate, configuredShadow } from "./decisions/composition.js";
 import { paperCostsSchema } from "./domain/paper-costs.js";
@@ -136,15 +138,23 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
     } else if (isFill(event.status) && position) {
       positions.record(position);
       const reference=z.object({reference_price_usd:z.number().positive(),reference_at:z.number().int()}).safeParse(event.detail);
-      if (position.paper_costs && reference.success) equity.mark(position,reference.data.reference_price_usd,reference.data.reference_at);
+      const momentumPolicy=managedPolicy(position.exit_policy);
+      if (momentumPolicy) equity.markValue(position,momentumPolicy.initialProceedsCents,position.exit_policy!.entry_at);
+      else if (position.paper_costs && reference.success) equity.mark(position,reference.data.reference_price_usd,reference.data.reference_at);
       else equity.mark(position, position.entry_price_usd, Date.parse(event.at));
     } else if (isClose(event.status) && position && close) {
       positions.close(position);
       equity.close(position, close.proceeds_cents, close.exit_at);
+    } else if (event.stage === "early_momentum_monitor" && identity) {
+      const open=positions.get(identity);
+      const mark=z.object({lastProceedsCents:z.number().int().nonnegative(),lastQuoteAt:z.number().int()}).parse(event.detail);
+      if (open?.run_id===identity.run_id && managedPolicy(open.exit_policy) && mark.lastQuoteAt>=0) {
+        equity.markValue(open,mark.lastProceedsCents,mark.lastQuoteAt);
+      }
     } else if (event.stage === "position_mark" && identity) {
       const open = positions.get(identity);
       const point = chartPointSchema.safeParse(event.detail);
-      if (open && open.run_id === identity.run_id && point.success) equity.mark(open, point.data.price, point.data.t);
+      if (open && !managedPolicy(open.exit_policy) && open.run_id === identity.run_id && point.success) equity.mark(open, point.data.price, point.data.t);
     }
   }
   await audit({stage:"worker_replay",status:"ok",gaps:[],detail:{position_keys:positions.list().map(tradeKey).sort()}});
@@ -170,10 +180,17 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
   });
   const runtime=new ModeRuntime(plane,providerAgent(router,()=>settings,abort.signal),new StrategyEvidence(process.env.STRATEGY_EVIDENCE_PATH || undefined));
   const shadow=mode==="paper" ? await configuredShadow(process.env,env.AUDIT_PATH,abort.signal) : undefined;
+  const momentumPositions=new MomentumPositions(journal,new StrategyEvidence(process.env.STRATEGY_EVIDENCE_PATH || undefined));
   const pipeline = {
-    call: runtime.call, mode:runtime, audit, live, deployment, paperCosts, entryDecision,
+    call: runtime.call, mode:runtime, audit, live, deployment, paperCosts, entryDecision, executionMode:mode, momentumPositions,
     shadowCandidate:shadow ? (snapshot: Parameters<typeof shadow.observe>[0],outcome: Parameters<typeof shadow.observe>[1]) => {
-      if (runtime.usesTypedDecisions()) shadow.observe(snapshot,outcome);
+      if (!runtime.usesTypedDecisions()) return;
+      if (shadow.scope==="early_momentum") {
+        if (!runtime.momentumConfig()) return;
+        const position=positions.get(snapshot.identity);
+        const selected=position?.run_id===snapshot.identity.run_id && position.strategy_id===earlyMomentumId;
+        shadow.observe(snapshot,outcome==="filled" && !selected ? "skipped" : outcome,runtime.momentumEvidence(snapshot.identity));
+      } else shadow.observe(snapshot,outcome);
     } : undefined,
     entriesBlocked: () => controls.paused,
     exitMode: env.PAPER_EXIT_MODE,
@@ -185,7 +202,7 @@ async function run(env:z.infer<typeof config>,mode:"paper"|"live"):Promise<void>
     },
     equity, positions, maxPositionBps: env.MAX_POSITION_BPS, maxOpenPositions: env.MAX_OPEN_POSITIONS,
   };
-  const watcher = watchPositions(positions, equity, audit, abort.signal, pipeline.call, env.MARK_REFRESH_MS, controls.exits, live, async () => (await pipeline.riskConfig()).max_slippage_bps, runtime, () => controls.safety.flattenRequested(), () => controls.exitsPaused,options.marks).finally(() => abort.abort());
+  const watcher = watchPositions(positions, equity, audit, abort.signal, pipeline.call, env.MARK_REFRESH_MS, controls.exits, live, async () => (await pipeline.riskConfig()).max_slippage_bps, runtime, () => controls.safety.flattenRequested(), () => controls.exitsPaused,options.marks,momentumPositions).finally(() => abort.abort());
   const refresh = refreshRecon(options, pipeline, cache, abort.signal).finally(() => abort.abort());
   const loop = runLoop(options, pipeline, abort.signal, cache, controls).finally(() => abort.abort());
   const results = await Promise.allSettled([loop, refresh, watcher]);

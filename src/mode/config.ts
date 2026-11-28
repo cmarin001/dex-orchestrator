@@ -6,6 +6,7 @@ import { providerConfigSchema, providerPolicySchema } from "../../schemas/provid
 import { budgetSchema } from "../../schemas/budget.js";
 import type { strategySetting } from "../../schemas/strategy.js";
 import type { Phase3Command } from "../../schemas/control-plane.js";
+import { strategyEnabledByDefault } from "../strategies/strategy.js";
 import { builtins } from "../strategies/builtins.js";
 
 const providerDefinitions = z.record(z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/),providerConfigSchema);
@@ -46,7 +47,7 @@ export function applySetting(state:Settings, action:Phase3Command) {
     case "provider_order": state.policy = { ...state.policy, order: action.provider_ids }; break;
     case "provider": state.providers[action.id]=action.enabled; break;
     case "strategy": state.strategies[action.id]={
-      ...{enabled:builtins.find(s=>s.id===action.id)?.kind==="signal",params:{}},
+      ...{enabled:strategyEnabledByDefault(builtins.find(s=>s.id===action.id)),params:{}},
       ...state.strategies[action.id],...action.settings,
     }; break;
   }

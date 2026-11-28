@@ -25,7 +25,11 @@ test("authenticated Phase 3 controls queue revisions and approve exactly one qua
   assert.equal((await app.request("/api/v1/mode")).status,401);
   assert.equal((await read("mode")).mode,"strategies");
   assert.equal((await read("providers")).items.length,4);
-  assert.equal((await read("strategies")).items.length,24);
+  const listed=await read("strategies");
+  assert.equal(listed.items.length,25);
+  const experimental=listed.items.find((strategy:{id:string})=>strategy.id==="early-momentum-reversal");
+  assert.equal(experimental.enabled,false);
+  assert.equal(experimental.params.minPoolAgeSec,600);
   const update={config:{mode:"human"},reason:"manual review",request_id:"human-mode"};
   assert.equal((await post("mode",update)).status,202);
   assert.equal((await read("mode")).mode,"strategies");

@@ -19,7 +19,7 @@ import type { Pipeline } from "./pipeline.js";
 const discoveryIntervalMs = 60_000;
 const watchedIntervalMs = 300_000;
 const retryIntervalMs = 600_000;
-type Schedule = { target: Target; watched: boolean; trigger: MarketSnapshot["trigger"]; starts: number; due: number };
+type Schedule = { target: Target; watched: boolean; trigger: MarketSnapshot["trigger"]; starts: number; due: number; momentumWatching?:boolean };
 
 export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cache: ReconCache, signal: AbortSignal) {
   const schedules = new Map<string, Schedule>();
@@ -79,6 +79,20 @@ export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cac
         await pipeline.audit({ stage: "market_discovery", status: "failed", gaps: ["discovery_unavailable"] });
       }
     }
+    const momentum=pipeline.executionMode!=="live" && !pipeline.live ? pipeline.mode?.momentumConfig() : undefined;
+    const activelyDiscovered=new Set<string>();
+    if (momentum && baseline && options.discovery) {
+      for (const [key,item] of schedules) {
+        if (item.watched) continue;
+        const observation=baseline.get(item.target.chain+":"+item.target.pair);
+        if (!observation) continue;
+        const age=(started-observation.createdAt)/1000;
+        if (age<momentum.minPoolAgeSec || age>momentum.maxPoolAgeSec ||
+            !(observation.liquidity>=momentum.minLiquidityUsd && observation.volume>=momentum.minVolumeHourUsd)) continue;
+        activelyDiscovered.add(key);
+        if (activelyDiscovered.size>=options.discovery.max_candidates) break;
+      }
+    }
     for (const item of schedules.values()) cache.track(item.target, item.watched);
     for (const item of schedules.values()) {
       if (signal.aborted) break;
@@ -87,9 +101,13 @@ export async function refreshRecon(options: LoopOptions, pipeline: Pipeline, cac
         item.due = started;
         continue;
       }
+      const revisit=activelyDiscovered.has(reconKey(item.target));
+      if (revisit && !item.momentumWatching) item.due=Math.min(started,item.due);
+      item.momentumWatching=revisit;
       if (item.due > started || (!item.watched && !baseline?.has(item.target.chain + ":" + item.target.pair))) continue;
       item.starts += 1;
-      item.due = item.watched ? started + (pipeline.mode ? 60_000 : watchedIntervalMs) : item.starts === 1 ? started + retryIntervalMs : Infinity;
+      item.due = revisit ? started+discoveryIntervalMs :
+        item.watched ? started + (pipeline.mode ? 60_000 : watchedIntervalMs) : item.starts === 1 ? started + retryIntervalMs : Infinity;
       const identity = { ...item.target, run_id: randomUUID() };
       await withLogContext({ run_id: identity.run_id, chain: identity.chain }, async () => {
         const mode = item.trigger === "new_pair" ? "new_pairs" : item.trigger;

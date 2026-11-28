@@ -1,4 +1,4 @@
-export type Trade = { pnlCents:number; costCents:number; openedAt:number; closedAt:number };
+export type Trade = { pnlCents:number; costCents:number; openedAt:number; closedAt:number; mfeCents?:number; maeCents?:number; feesCents?:number };
 const mean=(values:readonly number[])=>values.length ? values.reduce((sum,value)=>sum+value,0)/values.length : null;
 
 export function performanceSummary(trades:readonly Trade[],startingCents:number) {
@@ -22,7 +22,11 @@ export function performanceSummary(trades:readonly Trade[],startingCents:number)
   }
   const averageReturn=mean(returns);
   const deviation=averageReturn===null ? null : Math.sqrt(mean(returns.map(value=>(value-averageReturn)**2))!);
-  return {trades:trades.length,netCents:equity-startingCents,netReturn:(equity-startingCents)/startingCents,
+  const excursion=trades.filter(row=>row.mfeCents!==undefined && row.maeCents!==undefined);
+  const withFees=trades.filter(row=>row.feesCents!==undefined);
+  return {averageMfeCents:mean(excursion.map(row=>row.mfeCents!)),averageMaeCents:mean(excursion.map(row=>row.maeCents!)),
+    falseEntryRate:excursion.length ? excursion.filter(row=>row.mfeCents!<=0).length/excursion.length : null,
+    averageCostsCents:mean(withFees.map(row=>row.feesCents!)),trades:trades.length,netCents:equity-startingCents,netReturn:(equity-startingCents)/startingCents,
     maxRealizedDrawdown:drawdown,profitFactor:losses.length ? wins.reduce((a,b)=>a+b,0)/Math.abs(losses.reduce((a,b)=>a+b,0)) : null,
     expectedCentsPerTrade:mean(trades.map(row=>row.pnlCents)),winRate:trades.length?wins.length/trades.length:null,
     averageWinCents:mean(wins),averageLossCents:mean(losses),turnoverCents,

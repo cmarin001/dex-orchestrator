@@ -1,5 +1,6 @@
 import type { z } from "zod";
 import type { WalletChain } from "../../schemas/transaction-intent.js";
+import type { EarlyMomentumEvidence } from "../../schemas/early-momentum.js";
 import type { Signal } from "../../schemas/signal.js";
 
 export type Observation = {
@@ -12,6 +13,8 @@ export type StrategyContext = {
   assetClass?:"memecoin"|"utility"|"stable"; holding?:boolean; rugPassed?:boolean; sellSimulation?:boolean;
   candles?: Array<{interval:number;open:number;close:number;volume:number}>;
   walletBuys?: string[];
+  asOf?: number;
+  earlyMomentum?: { observedAt:number; data:EarlyMomentumEvidence };
   performance?: {winRate:number;payoff:number};
 };
 export interface Strategy {
@@ -22,9 +25,12 @@ export interface Strategy {
   assetClasses: ("memecoin"|"utility"|"stable")[];
   params:z.ZodType;
   kind:"signal"|"guard"|"overlay";
+  defaultEnabled?: boolean;
   evaluate(ctx:StrategyContext, params?:unknown):Signal|null;
   factor?(ctx:StrategyContext, params:unknown, signals:Signal[]):number;
 }
+
+export const strategyEnabledByDefault = (strategy?: Strategy) => strategy?.defaultEnabled ?? strategy?.kind === "signal";
 
 const chains: WalletChain[] = ["base","solana","ethereum","arbitrum","bsc","polygon","optimism"];
 const assetClasses = ["memecoin"] as const;

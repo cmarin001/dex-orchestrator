@@ -15,6 +15,7 @@ optional guards and overlays through the strategy controls.
 | liquidity-influx | Liquidity rises over the lookback | 6% / 3% / 10 min |
 | holder-growth | Holder count increases over the lookback | 4% / 2% / 10 min |
 | whale-accum | Whale net accumulation exceeds the threshold | 5% / 3% / 15 min |
+| [early-momentum-reversal](early-momentum-reversal.md) | Confirmed accumulation and rebound with executable quote evidence | Opt-in paper, net fixed or trailing exits |
 | new-pair-momentum | Young pool with sufficient volume | 8% / 5% / 5 min |
 | dip-buy | Price falls with volume holding | 5% / 4% / 10 min |
 | range-breakout | Price breaks a tight trading range | 4% / 2% / 8 min |

@@ -17,7 +17,9 @@
     "research": "node --import tsx src/agent-runtime/cli.ts",
     "research:calibrate": "node --import tsx src/learning/shadow-cli.ts",
     "research:replay": "node --import tsx src/learning/replay-cli.ts",
-    "bench:candidate": "node --import tsx scripts/benchmark-candidate.ts"
+    "bench:candidate": "node --import tsx scripts/benchmark-candidate.ts",
+    "evidence:candles": "node --import tsx scripts/fetch-market-candles.ts",
+    "bench:early-momentum": "node --import tsx scripts/benchmark-early-momentum.ts"
   },
   "dependencies": {
     "@aws-sdk/client-kms": "3.1175.0",

@@ -7,6 +7,7 @@ import { budgetSchema } from "../../schemas/budget.js";
 import type { JournalEvent } from "../logging/types.js";
 import { Budget } from "../providers/budget.js";
 import { Registry } from "../strategies/registry.js";
+import { strategyEnabledByDefault } from "../strategies/strategy.js";
 import { initialSettings } from "../mode/config.js";
 import { ControlPlane } from "./plane.js";
 import { commandReceipt, ControlConflict, requestKey, type Inbox } from "./commands.js";
@@ -95,9 +96,9 @@ export function createPhase3Api(events:()=>Promise<JournalEvent[]>,inbox:Inbox,b
           recent.set(name,[...trades.slice(-49),event.close.proceeds_cents>event.position.cost_cents]);
         }
         const result=registry.list().filter(s=>!item||s.id===item).map(s=>{
-          const {evaluate,factor,params,...meta}=s;
+          const {evaluate,factor,params,defaultEnabled,...meta}=s;
           const samples=recent.get(s.id) ?? [];
-          return {...meta,schema:z.toJSONSchema(params),enabled:settings.strategies[s.id]?.enabled ?? s.kind==="signal",
+          return {...meta,schema:z.toJSONSchema(params),enabled:settings.strategies[s.id]?.enabled ?? strategyEnabledByDefault(s),
             params:settings.strategies[s.id]?.params ?? params.safeParse({}).data,
             recent_win_rate:samples.length?samples.filter(Boolean).length/samples.length:null};
         });
